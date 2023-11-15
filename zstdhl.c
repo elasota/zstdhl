@@ -39,12 +39,23 @@ SOFTWARE.
 #define ZSTDHL_HUFFMAN_CODE_LENGTH_LIMIT	11
 
 #define ZSTDHL_CHECKED(n) do {\
-	ZSTDHL_DECL(zstdhl_ResultCode_t) result = (n);\
-	if (result != ZSTDHL_RESULT_OK)\
-		return result;\
+		zstdhl_ResultCode_t result = (n);\
+		if (result != ZSTDHL_RESULT_OK)\
+		{\
+			zstdhl_ReportErrorCode(result);\
+			return result; \
+		}\
 	} while(0)
 
 #define ZSTDHL_LESS_THAN_ONE_VALUE ((uint32_t)0xffffffffu)
+
+static void zstdhl_ReportErrorCode(zstdhl_ResultCode_t errorCode)
+{
+	if (errorCode < ZSTDHL_RESULT_SOFT_FAULT)
+	{
+		int n = 0;
+	}
+}
 
 static zstdhl_ResultCode_t zstdhl_ReadChecked(const zstdhl_StreamSourceObject_t * streamSource, void *dest, size_t numBytes, zstdhl_ResultCode_t failureResult)
 {
@@ -64,6 +75,12 @@ enum zstdhl_BufferID
 	ZSTDHL_BUFFER_LIT_LENGTH_FSE_TABLE,
 	ZSTDHL_BUFFER_OFFSET_FSE_TABLE,
 	ZSTDHL_BUFFER_MATCH_LENGTH_FSE_TABLE,
+
+	ZSTDHL_BUFFER_OFFSET_PROBS_1,
+	ZSTDHL_BUFFER_OFFSET_PROBS_2,
+	ZSTDHL_BUFFER_OFFSET_BIGNUM,
+
+	ZSTDHL_BUFFER_SEQ_TEMPS,
 
 	ZSTDHL_BUFFER_COUNT,
 };
@@ -376,6 +393,14 @@ static zstdhl_ResultCode_t zstdhl_ReverseBitstream_ReadBitsComplete(zstdhl_Rever
 	return ZSTDHL_RESULT_OK;
 }
 
+static zstdhl_ResultCode_t zstdhl_ReverseBitstream_ReadBitsCompleteSoftFault(zstdhl_ReverseBitstream_t *bitstream, uint8_t numBitsToRead, uint32_t *outBits)
+{
+	ZSTDHL_CHECKED(zstdhl_ReverseBitstream_PeekBits(bitstream, numBitsToRead, outBits, ZSTDHL_RESULT_REVERSE_BITSTREAM_TRUNCATED_SOFT_FAULT));
+	ZSTDHL_CHECKED(zstdhl_ReverseBitstream_ConsumeBits(bitstream, numBitsToRead));
+
+	return ZSTDHL_RESULT_OK;
+}
+
 static zstdhl_ResultCode_t zstdhl_ReverseBitstream_ReadBitsPartial(zstdhl_ReverseBitstream_t *bitstream, uint8_t numBitsToRead, uint8_t *outNumBitsRead, uint32_t *outBits)
 {
 	if (bitstream->m_numBits < numBitsToRead)
@@ -547,36 +572,36 @@ static zstdhl_ResultCode_t zstdhl_ParseFrameHeader(const zstdhl_StreamSourceObje
 
 static zstdhl_ResultCode_t zstdhl_ParseRLEBlock(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, uint32_t blockSize)
 {
-#ifndef ZSTDHL_ALLOW_DECL_AFTER_STATEMENT
 	zstdhl_ResultCode_t result = ZSTDHL_RESULT_OK;
-#endif
+	zstdhl_BlockRLEDesc_t rleDesc;
 
-	uint8_t repeatedByte;
+	ZSTDHL_CHECKED(zstdhl_ReadChecked(streamSource, &rleDesc.m_value, 1, ZSTDHL_RESULT_BLOCK_TRUNCATED));
 
-	ZSTDHL_CHECKED(zstdhl_ReadChecked(streamSource, &repeatedByte, 1, ZSTDHL_RESULT_BLOCK_TRUNCATED));
+	rleDesc.m_count = blockSize;
 
-	disassemblyOutput->m_api->m_reportBlockRLEDataFunc(disassemblyOutput->m_userdata, repeatedByte, 1);
+	ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_BLOCK_RLE_DATA, &rleDesc));
 
 	return ZSTDHL_RESULT_OK;
 }
 
 static zstdhl_ResultCode_t zstdhl_ParseRawBlock(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, uint32_t blockSize)
 {
-#ifndef ZSTDHL_ALLOW_DECL_AFTER_STATEMENT
-	zstdhl_ResultCode_t result = ZSTDHL_RESULT_OK;
-	uint32_t sizeToRead = 0;
-#endif
-
+	zstdhl_BlockUncompressedDesc_t uncompressedDesc;
 	uint8_t bytes[1024];
+
+	uncompressedDesc.m_data = bytes;
 
 	while (blockSize >= sizeof(bytes))
 	{
-		ZSTDHL_DECL(uint32_t) sizeToRead = sizeof(bytes);
-		if (sizeToRead > blockSize)
-			sizeToRead = blockSize;
 
-		ZSTDHL_CHECKED(zstdhl_ReadChecked(streamSource, bytes, sizeToRead, ZSTDHL_RESULT_BLOCK_TRUNCATED));
-		disassemblyOutput->m_api->m_reportBlockUncompressedDataFunc(disassemblyOutput->m_userdata, bytes, sizeToRead);
+		uncompressedDesc.m_size = sizeof(bytes);
+		if (uncompressedDesc.m_size > blockSize)
+			uncompressedDesc.m_size = blockSize;
+
+		uncompressedDesc.m_data = bytes;
+
+		ZSTDHL_CHECKED(zstdhl_ReadChecked(streamSource, bytes, uncompressedDesc.m_size, ZSTDHL_RESULT_BLOCK_TRUNCATED));
+		disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_BLOCK_UNCOMPRESSED_DATA, &uncompressedDesc);
 	}
 
 	return ZSTDHL_RESULT_OK;
@@ -593,11 +618,17 @@ zstdhl_ResultCode_t zstdhl_ParseRLELiteralsSection(const zstdhl_StreamSourceObje
 	return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
 }
 
-zstdhl_ResultCode_t zstdhl_DecodeFSEDescription(zstdhl_ForwardBitstream_t *bitstream, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, uint8_t maxAccuracyLog, int *outAccuracyLog, uint32_t *probs, int maxProbs)
+typedef zstdhl_ResultCode_t (*zstdhl_BufferResizeFunc_t)(void *userData, uint32_t **outBuffer, size_t *outCapacity);
+typedef void (*zstdhl_BufferClearFunc_t)(void *userData);
+
+zstdhl_ResultCode_t zstdhl_DecodeFSEDescription(zstdhl_ForwardBitstream_t *bitstream, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, uint8_t maxAccuracyLog, zstdhl_BufferResizeFunc_t increaseCapacityFunc, void *increaseCapacityUserData, uint32_t **outProbs, size_t *outNumProbs, int *outAccuracyLog)
 {
 	uint32_t bits = 0;
+	size_t maxProbs = 0;
+	size_t numProbs = 0;
+	size_t numProbsDecoded = 0;
+	uint32_t *probs = NULL;
 	int accuracyLog = 0;
-	int numProbsDecoded = 0;
 
 	ZSTDHL_CHECKED(zstdhl_ForwardBitstream_ReadBits(bitstream, 4, &bits));
 	accuracyLog = (int)bits + 5;
@@ -609,7 +640,7 @@ zstdhl_ResultCode_t zstdhl_DecodeFSEDescription(zstdhl_ForwardBitstream_t *bitst
 
 	ZSTDHL_DECL(uint32_t) cumulativeProb = 0;
 
-	ZSTDHL_CHECKED(disassemblyOutput->m_api->m_reportFSETableStartFunc(disassemblyOutput->m_userdata));
+	ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_FSE_TABLE_START, NULL));
 
 	do
 	{
@@ -620,10 +651,13 @@ zstdhl_ResultCode_t zstdhl_DecodeFSEDescription(zstdhl_ForwardBitstream_t *bitst
 		uint32_t largeProbStart = (1 << minProbBits) - largeProbRange;
 
 		uint32_t probValue = 0;
+		zstdhl_ProbabilityDesc_t probDesc;
 
-		if (maxProbs == 0)
-			return ZSTDHL_RESULT_TOO_MANY_PROBS;
-
+		if (numProbs == maxProbs)
+		{
+			ZSTDHL_CHECKED(increaseCapacityFunc(increaseCapacityUserData, &probs, &maxProbs));
+		}
+			
 		ZSTDHL_CHECKED(zstdhl_ForwardBitstream_ReadBits(bitstream, minProbBits, &probValue));
 
 		if (probValue >= largeProbStart)
@@ -638,13 +672,15 @@ zstdhl_ResultCode_t zstdhl_DecodeFSEDescription(zstdhl_ForwardBitstream_t *bitst
 
 		if (probValue == 0)
 		{
-			*probs = ZSTDHL_LESS_THAN_ONE_VALUE;
+			probs[numProbs] = ZSTDHL_LESS_THAN_ONE_VALUE;
+			numProbs++;
+
 			cumulativeProb++;
 
-			maxProbs--;
-			probs++;
+			probDesc.m_prob = ZSTDHL_LESS_THAN_ONE_VALUE;
+			probDesc.m_repeatCount = 0;
 
-			ZSTDHL_CHECKED(disassemblyOutput->m_api->m_reportFSEProbabilityFunc(disassemblyOutput->m_userdata, ZSTDHL_LESS_THAN_ONE_VALUE, 0));
+			ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_FSE_PROBABILITY, &probDesc));
 		}
 		else
 		{
@@ -652,18 +688,20 @@ zstdhl_ResultCode_t zstdhl_DecodeFSEDescription(zstdhl_ForwardBitstream_t *bitst
 
 			if (prob > 0)
 			{
-				*probs = prob;
-
-				maxProbs--;
-				probs++;
+				probs[numProbs] = prob;
+				numProbs++;
 
 				cumulativeProb += prob;
 
-				ZSTDHL_CHECKED(disassemblyOutput->m_api->m_reportFSEProbabilityFunc(disassemblyOutput->m_userdata, prob, 0));
+				probDesc.m_prob = prob;
+				probDesc.m_repeatCount = 0;
+
+				ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_FSE_PROBABILITY, &probDesc));
 			}
 			else
 			{
-				int numZeroProbs = 1;
+				size_t numZeroProbs = 1;
+				size_t availProbs = maxProbs - numProbs;
 
 				for (;;)
 				{
@@ -671,46 +709,103 @@ zstdhl_ResultCode_t zstdhl_DecodeFSEDescription(zstdhl_ForwardBitstream_t *bitst
 
 					ZSTDHL_CHECKED(zstdhl_ForwardBitstream_ReadBits(bitstream, 2, &repeatBits));
 
-					numZeroProbs += (int)repeatBits;
+					numZeroProbs += repeatBits;
 
-					if (numZeroProbs > maxProbs)
-						*probs = ZSTDHL_RESULT_TOO_MANY_PROBS;
+					while (numZeroProbs > availProbs)
+					{
+						ZSTDHL_CHECKED(increaseCapacityFunc(increaseCapacityUserData, &probs, &maxProbs));
+
+						availProbs = maxProbs - numProbs;
+					}
 
 					if (repeatBits < 3)
 						break;
 				}
 
-				ZSTDHL_CHECKED(disassemblyOutput->m_api->m_reportFSEProbabilityFunc(disassemblyOutput->m_userdata, 0, numZeroProbs - 1));
+				probDesc.m_prob = 0;
+				probDesc.m_repeatCount = numZeroProbs - 1;
+
+				ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_FSE_PROBABILITY, &probDesc));
 
 				while (numZeroProbs > 0)
 				{
 					numZeroProbs--;
-					*probs = 0;
-					probs++;
-					maxProbs--;
+					probs[numProbs] = 0;
+					numProbs++;
 				}
 			}
 		}
 	} while (cumulativeProb < targetTotalProbs);
 
-	while (maxProbs > 0)
+	*outNumProbs = numProbs;
+	*outProbs = probs;
+	*outAccuracyLog = accuracyLog;
+
+	while (numProbs < maxProbs)
 	{
-		*probs = 0;
-		probs++;
-		maxProbs--;
+		probs[numProbs] = 0;
+		numProbs++;
 	}
 
 	ZSTDHL_DECL(uint32_t) wasteBits = 0;
 
 	if (bitstream->m_numBits)
 	{
-		ZSTDHL_CHECKED(zstdhl_ForwardBitstream_ReadBits(bitstream, bitstream->m_numBits, &wasteBits));
-		ZSTDHL_CHECKED(disassemblyOutput->m_api->m_reportWasteBitsFunc(disassemblyOutput->m_userdata, wasteBits));
+		zstdhl_WasteBitsDesc_t wasteBitsDesc;
+
+		ZSTDHL_CHECKED(zstdhl_ForwardBitstream_ReadBits(bitstream, bitstream->m_numBits, &wasteBitsDesc.m_wasteBits));
+		ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_WASTE_BITS, &wasteBitsDesc));
 	}
 
-	ZSTDHL_CHECKED(disassemblyOutput->m_api->m_reportFSETableEndFunc(disassemblyOutput->m_userdata));
+	ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_FSE_TABLE_END, NULL));
 
-	*outAccuracyLog = accuracyLog;
+
+	return ZSTDHL_RESULT_OK;
+}
+
+typedef struct zstdhl_SimpleProbDecodeState
+{
+	size_t m_maxProbs;
+	uint32_t *m_probs;
+	uint8_t m_isFirstRequest;
+	zstdhl_ResultCode_t m_failureCode;
+} zstdhl_SimpleProbDecodeState_t;
+
+void zstdhl_SimpleProbDecodeState_Init(zstdhl_SimpleProbDecodeState_t *decState, uint32_t *probs, size_t maxProbs, zstdhl_ResultCode_t failureCode)
+{
+	decState->m_isFirstRequest = 1;
+	decState->m_maxProbs = maxProbs;
+	decState->m_probs = probs;
+	decState->m_failureCode = failureCode;
+}
+
+static zstdhl_ResultCode_t zstdhl_SimpleProbRequestMoreCapacity(void *userdata, uint32_t **outProbs, size_t *outNumProbs)
+{
+	zstdhl_SimpleProbDecodeState_t *decState = (zstdhl_SimpleProbDecodeState_t *)userdata;
+
+	if (decState->m_isFirstRequest)
+	{
+		decState->m_isFirstRequest = 0;
+		*outProbs = decState->m_probs;
+		*outNumProbs = decState->m_maxProbs;
+		return ZSTDHL_RESULT_OK;
+	}
+
+	return decState->m_failureCode;
+}
+
+static void zstdhl_SimpleProbClear(void *userdata)
+{
+}
+
+zstdhl_ResultCode_t zstdhl_DecodeFSEDescriptionSimple(zstdhl_ForwardBitstream_t *bitstream, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, uint8_t maxAccuracyLog, uint32_t *probs, size_t maxProbs, size_t *outNumProbs, int *outAccuracyLog)
+{
+	zstdhl_SimpleProbDecodeState_t simpleDecodeState;
+	uint32_t *scratchProbs = NULL;
+
+	zstdhl_SimpleProbDecodeState_Init(&simpleDecodeState, probs, maxProbs, ZSTDHL_RESULT_TOO_MANY_PROBS);
+
+	ZSTDHL_CHECKED(zstdhl_DecodeFSEDescription(bitstream, disassemblyOutput, maxAccuracyLog, zstdhl_SimpleProbRequestMoreCapacity, &simpleDecodeState, &scratchProbs, outNumProbs, outAccuracyLog));
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -738,17 +833,17 @@ zstdhl_ResultCode_t zstdhl_ParseFSEStream(zstdhl_ReverseBitstream_t *bitstream, 
 
 		const zstdhl_FSETableCell_t *cell = fseTable->m_cells + state;
 
-		uint8_t sym = cell->m_sym;
+		size_t sym = cell->m_sym;
 
 		if (numBytesRead == outCapacity)
 			return ZSTDHL_RESULT_FSE_OUTPUT_CAPACITY_EXCEEDED;
 
-		outBuffer[numBytesRead++] = sym;
+		outBuffer[numBytesRead++] = (uint8_t)sym;
 
 		ZSTDHL_DECL(uint32_t) refillBits = 0;
-		ZSTDHL_DECL(zstdhl_ResultCode_t) moreBitsResult = zstdhl_ReverseBitstream_ReadBitsComplete(bitstream, cell->m_numBits, &refillBits);
+		ZSTDHL_DECL(zstdhl_ResultCode_t) moreBitsResult = zstdhl_ReverseBitstream_ReadBitsCompleteSoftFault(bitstream, cell->m_numBits, &refillBits);
 		
-		if (moreBitsResult == ZSTDHL_RESULT_REVERSE_BITSTREAM_TRUNCATED)
+		if (moreBitsResult == ZSTDHL_RESULT_REVERSE_BITSTREAM_TRUNCATED_SOFT_FAULT)
 		{
 			uint8_t statesToFlush = numStates - 1;
 
@@ -761,7 +856,7 @@ zstdhl_ResultCode_t zstdhl_ParseFSEStream(zstdhl_ReverseBitstream_t *bitstream, 
 				if (activeState == numStates)
 					activeState = 0;
 
-				outBuffer[numBytesRead++] = fseTable->m_cells[states[activeState]].m_sym;
+				outBuffer[numBytesRead++] = (uint8_t)fseTable->m_cells[states[activeState]].m_sym;
 
 				statesToFlush--;
 			}
@@ -771,11 +866,6 @@ zstdhl_ResultCode_t zstdhl_ParseFSEStream(zstdhl_ReverseBitstream_t *bitstream, 
 		else if (moreBitsResult == ZSTDHL_RESULT_OK)
 		{
 			states[activeState] = cell->m_baseline + refillBits;
-
-			if (states[activeState] > fseTable->m_numCells)
-			{
-				int n = 0;
-			}
 
 			activeState++;
 			if (activeState == numStates)
@@ -853,7 +943,8 @@ zstdhl_ResultCode_t zstdhl_ExpandHuffmanWeightTable(const zstdhl_HuffmanTreePart
 
 zstdhl_ResultCode_t zstdhl_ParseFSEHuffmanWeights(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, zstdhl_HuffmanTreeDesc_t *huffTreeDesc, zstdhl_Buffers_t *buffers, uint8_t weightsCompressedSize)
 {
-	ZSTDHL_DECL(int) accuracyLog = 0;
+	int accuracyLog = 0;
+	size_t numHuffmanProbs = 0;
 
 	ZSTDHL_DECL(zstdhl_SliceStreamSource_t) sliceSource;
 	sliceSource.m_sizeRemaining = weightsCompressedSize;
@@ -868,12 +959,12 @@ zstdhl_ResultCode_t zstdhl_ParseFSEHuffmanWeights(const zstdhl_StreamSourceObjec
 
 	ZSTDHL_CHECKED(zstdhl_ForwardBitstream_Init(&bitstream, &sliceSourceObj));
 
-	ZSTDHL_CHECKED(zstdhl_DecodeFSEDescription(&bitstream, disassemblyOutput, 6, &accuracyLog, huffTreeDesc->m_weightTableProbabilities, 256));
+	ZSTDHL_CHECKED(zstdhl_DecodeFSEDescriptionSimple(&bitstream, disassemblyOutput, 6, huffTreeDesc->m_weightTableProbabilities, 256, &numHuffmanProbs, &accuracyLog));
 
 	huffTreeDesc->m_huffmanWeightFormat = ZSTDHL_HUFFMAN_WEIGHT_ENCODING_FSE;
 	huffTreeDesc->m_weightTable.m_accuracyLog = accuracyLog;
 	huffTreeDesc->m_weightTable.m_probabilities = huffTreeDesc->m_weightTableProbabilities;
-	huffTreeDesc->m_weightTable.m_numProbabilities = 256;
+	huffTreeDesc->m_weightTable.m_numProbabilities = numHuffmanProbs;
 
 	ZSTDHL_DECL(size_t) weightFSETableSize = (size_t)(1 << accuracyLog);
 
@@ -940,7 +1031,7 @@ zstdhl_ResultCode_t zstdhl_ParseHuffmanTreeDescription(const zstdhl_StreamSource
 		ZSTDHL_CHECKED(zstdhl_ParseDirectHuffmanWeights(streamSource, disassemblyOutput, treeDesc, headerByte - 128));
 	}
 
-	ZSTDHL_CHECKED(disassemblyOutput->m_api->m_reportHuffmanTableDescFunc(disassemblyOutput->m_userdata, treeDesc));
+	ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_HUFFMAN_TREE, treeDesc));
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -1101,6 +1192,7 @@ zstdhl_ResultCode_t zstdhl_DecodeHuffmanLiterals(const zstdhl_StreamSourceObject
 	}
 
 	zstdhl_Buffers_Dealloc(buffers, ZSTDHL_BUFFER_HUFFMAN_BITSTREAM);
+	zstdhl_Buffers_Dealloc(buffers, ZSTDHL_BUFFER_LITERALS);
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -1280,7 +1372,7 @@ static zstdhl_SubstreamCompressionStructureDef_t zstdhl_offsetCodeSDef =
 	zstdhl_OffsetCodeProbs
 };
 
-zstdhl_ResultCode_t zstdhl_ParseCompressionDef(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, uint8_t defByte, int defBitOffset, const zstdhl_SubstreamCompressionStructureDef_t *sdef, zstdhl_SequencesSubstreamCompressionDef_t *cdef, uint32_t *dynamicProbs)
+zstdhl_ResultCode_t zstdhl_ParseCompressionDef(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, uint8_t defByte, int defBitOffset, const zstdhl_SubstreamCompressionStructureDef_t *sdef, zstdhl_SequencesSubstreamCompressionDef_t *cdef, zstdhl_BufferResizeFunc_t resizeFunc, zstdhl_BufferClearFunc_t clearFunc, void *resizeUserData)
 {
 	zstdhl_SequencesCompressionMode_t compressionMode = (zstdhl_SequencesCompressionMode_t)((defByte >> defBitOffset) & 3);
 	uint32_t i = 0;
@@ -1289,6 +1381,8 @@ zstdhl_ResultCode_t zstdhl_ParseCompressionDef(const zstdhl_StreamSourceObject_t
 	{
 	case ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED:
 		{
+			clearFunc(resizeUserData);
+
 			cdef->m_isDefined = 1;
 			cdef->m_fseTableDef.m_accuracyLog = sdef->m_defaultAccuracyLog;
 			cdef->m_fseTableDef.m_numProbabilities = sdef->m_numProbs;
@@ -1298,39 +1392,49 @@ zstdhl_ResultCode_t zstdhl_ParseCompressionDef(const zstdhl_StreamSourceObject_t
 
 	case ZSTDHL_SEQ_COMPRESSION_MODE_RLE:
 		{
-			uint32_t i = 0;
 			uint8_t rleByte = 0;
+			uint32_t *probs = NULL;
+			size_t i = 0;
+			size_t maxProbs = 0;
+
+			clearFunc(resizeUserData);
 
 			ZSTDHL_CHECKED(zstdhl_ReadChecked(streamSource, &rleByte, 1, ZSTDHL_RESULT_SEQUENCE_COMPRESSION_DEF_TRUNCATED));
 
-			if (rleByte >= sdef->m_numProbs)
-				return ZSTDHL_RESULT_SEQUENCE_RLE_SYMBOL_INVALID;
+			while (rleByte >= maxProbs)
+			{
+				ZSTDHL_CHECKED(resizeFunc(resizeUserData, &probs, &maxProbs));
+			}
 
 			cdef->m_isDefined = 1;
 			cdef->m_fseTableDef.m_accuracyLog = 0;
-			cdef->m_fseTableDef.m_numProbabilities = 1;
-			cdef->m_fseTableDef.m_probabilities = dynamicProbs;
+			cdef->m_fseTableDef.m_numProbabilities = rleByte + 1u;
+			cdef->m_fseTableDef.m_probabilities = probs;
 
-			for (i = 0; i < sdef->m_numProbs; i++)
-				dynamicProbs[i] = 0;
+			for (i = 0; i < maxProbs; i++)
+				probs[i] = 0;
 
-			dynamicProbs[rleByte] = 1;
+			probs[rleByte] = 1;
 		}
 		return ZSTDHL_RESULT_OK;
 
 	case ZSTDHL_SEQ_COMPRESSION_MODE_FSE:
 		{
 			int accuracyLog = 0;
-
+			uint32_t *probs = NULL;
+			size_t numProbs = 0;
 			zstdhl_ForwardBitstream_t bitstream;
+
+			clearFunc(resizeUserData);
+
 			zstdhl_ForwardBitstream_Init(&bitstream, streamSource);
 
-			ZSTDHL_CHECKED(zstdhl_DecodeFSEDescription(&bitstream, disassemblyOutput, sdef->m_maxAccuracyLog, &accuracyLog, dynamicProbs, sdef->m_numProbs));
+			ZSTDHL_CHECKED(zstdhl_DecodeFSEDescription(&bitstream, disassemblyOutput, sdef->m_maxAccuracyLog, resizeFunc, resizeUserData, &probs, &numProbs, &accuracyLog));
 
 			cdef->m_isDefined = 1;
 			cdef->m_fseTableDef.m_accuracyLog = accuracyLog;
-			cdef->m_fseTableDef.m_numProbabilities = sdef->m_numProbs;
-			cdef->m_fseTableDef.m_probabilities = dynamicProbs;
+			cdef->m_fseTableDef.m_numProbabilities = numProbs;
+			cdef->m_fseTableDef.m_probabilities = probs;
 		}
 		return ZSTDHL_RESULT_OK;
 
@@ -1349,7 +1453,14 @@ zstdhl_ResultCode_t zstdhl_ParseCompressionDef(const zstdhl_StreamSourceObject_t
 zstdhl_ResultCode_t zstdhl_InitSequenceDecoding(zstdhl_ReverseBitstream_t *bitstream, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, zstdhl_Buffers_t *buffers, const zstdhl_FSETableDef_t *tableDef, int bufferID, zstdhl_FSETable_t *table, uint32_t *outInitialState)
 {
 	void *cellPtr = NULL;
-	zstdhl_FSESymbolTemp_t symbolTemps[53];
+	zstdhl_FSESymbolTemp_t *symbolTemps = NULL;
+	void *symbolTempsBufferPtr = NULL;
+
+	if (SIZE_MAX / sizeof(zstdhl_FSESymbolTemp_t) < tableDef->m_numProbabilities)
+		return ZSTDHL_RESULT_OUT_OF_MEMORY;
+
+	ZSTDHL_CHECKED(zstdhl_Buffers_Alloc(buffers, ZSTDHL_BUFFER_SEQ_TEMPS, sizeof(zstdhl_FSESymbolTemp_t) * tableDef->m_numProbabilities, &symbolTempsBufferPtr));
+	symbolTemps = (zstdhl_FSESymbolTemp_t *)symbolTempsBufferPtr;
 
 	zstdhl_Buffers_Dealloc(buffers, bufferID);
 	ZSTDHL_CHECKED(zstdhl_Buffers_Alloc(buffers, bufferID, sizeof(zstdhl_FSETableCell_t) << tableDef->m_accuracyLog, &cellPtr));
@@ -1360,8 +1471,32 @@ zstdhl_ResultCode_t zstdhl_InitSequenceDecoding(zstdhl_ReverseBitstream_t *bitst
 
 	ZSTDHL_CHECKED(zstdhl_ReverseBitstream_ReadBitsComplete(bitstream, table->m_accuracyLog, outInitialState));
 
+	zstdhl_Buffers_Dealloc(buffers, ZSTDHL_BUFFER_SEQ_TEMPS);
+
 	return ZSTDHL_RESULT_OK;
 }
+
+// Match length data for codes 32..42
+uint32_t zstdhl_MatchLengthBaselines[] = 
+{
+	35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99
+};
+
+uint8_t zstdhl_MatchLengthBits[] =
+{
+	1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5
+};
+
+// Lit length data for 16..24
+uint32_t zstdhl_LitLengthBaselines[] =
+{
+	16, 18, 20, 22, 24, 28, 32, 40, 48
+};
+
+uint8_t zstdhl_LitLengthBits[] =
+{
+	1, 1, 1, 1, 2, 2, 3, 3, 4
+};
 
 zstdhl_ResultCode_t zstdhl_DecodeSequences(zstdhl_ReverseBitstream_t *bitstream, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, zstdhl_Buffers_t *buffers, const zstdhl_FSETableDef_t *litLengthTableDef, const zstdhl_FSETableDef_t *offsetTableDef, const zstdhl_FSETableDef_t *matchLengthTableDef, uint32_t numSequences)
 {
@@ -1371,12 +1506,170 @@ zstdhl_ResultCode_t zstdhl_DecodeSequences(zstdhl_ReverseBitstream_t *bitstream,
 	zstdhl_FSETable_t litLengthTable;
 	zstdhl_FSETable_t matchLengthTable;
 	zstdhl_FSETable_t offsetTable;
+	uint32_t *offsetBigNum = (uint32_t *)buffers->m_buffers[ZSTDHL_BUFFER_OFFSET_BIGNUM];
 
 	ZSTDHL_CHECKED(zstdhl_InitSequenceDecoding(bitstream, disassemblyOutput, buffers, litLengthTableDef, ZSTDHL_BUFFER_LIT_LENGTH_FSE_TABLE, &litLengthTable, &litLengthState));
 	ZSTDHL_CHECKED(zstdhl_InitSequenceDecoding(bitstream, disassemblyOutput, buffers, offsetTableDef, ZSTDHL_BUFFER_OFFSET_FSE_TABLE, &offsetTable, &offsetState));
 	ZSTDHL_CHECKED(zstdhl_InitSequenceDecoding(bitstream, disassemblyOutput, buffers, matchLengthTableDef, ZSTDHL_BUFFER_MATCH_LENGTH_FSE_TABLE, &matchLengthTable, &matchLengthState));
 
-	return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
+	while (numSequences > 0)
+	{
+		const zstdhl_FSETableCell_t *litLengthCell = litLengthTable.m_cells + litLengthState;
+		const zstdhl_FSETableCell_t *matchLengthCell = matchLengthTable.m_cells + matchLengthState;
+		const zstdhl_FSETableCell_t *offsetTableCell = offsetTable.m_cells + offsetState;
+		size_t litLengthSym = litLengthCell->m_sym;
+		size_t matchLengthSym = matchLengthCell->m_sym;
+		size_t offsetSym = offsetTableCell->m_sym;
+		uint32_t litLengthBaseline = 0;
+		uint8_t litLengthNumBits = 0;
+		uint32_t matchLengthBaseline = 0;
+		uint8_t matchLengthNumBits = 0;
+		uint32_t litLength = 0;
+		uint32_t matchLength = 0;
+		uint32_t stateOffset = 0;
+		zstdhl_SequenceDesc_t seq;
+
+		if (litLengthSym < 16)
+			litLengthBaseline = (uint32_t)litLengthSym;
+		else if (litLengthSym < 25)
+		{
+			litLengthBaseline = zstdhl_LitLengthBaselines[litLengthSym - 16];
+			litLengthNumBits = zstdhl_LitLengthBits[litLengthSym - 16];
+		}
+		else
+		{
+			litLengthBaseline = 1 << (litLengthSym - 19);
+			litLengthNumBits = (uint8_t)(litLengthSym - 19);
+		}
+
+		if (matchLengthSym < 32)
+			matchLengthBaseline = (uint32_t)matchLengthSym + 3;
+		else if (matchLengthSym < 43)
+		{
+			matchLengthBaseline = zstdhl_MatchLengthBaselines[matchLengthSym - 32];
+			matchLengthNumBits = zstdhl_MatchLengthBits[matchLengthSym - 32];
+		}
+		else
+		{
+			matchLengthBaseline = (1 << (matchLengthSym - 36)) + 3;
+			matchLengthNumBits = (uint8_t)(matchLengthSym - 36);
+		}
+
+		{
+			size_t numOffsetDWords = (offsetSym / 32u) + 1u;
+			size_t bitsRemaining = offsetSym;
+			size_t i = 0;
+			uint32_t bits = 0;
+
+			for (i = 0; i < numOffsetDWords; i++)
+				offsetBigNum[i] = 0;
+
+			while (bitsRemaining > 0)
+			{
+				size_t bitsToRead = 16;
+				if (bitsRemaining % 16u != 0)
+					bitsToRead = (bitsRemaining % 16u);
+
+				ZSTDHL_CHECKED(zstdhl_ReverseBitstream_ReadBitsComplete(bitstream, bitsToRead, &bits));
+				bitsRemaining -= bitsToRead;
+
+				offsetBigNum[bitsRemaining / 32u] |= bits << (bitsRemaining % 32u);
+			}
+
+			offsetBigNum[offsetSym / 32u] |= 1 << (offsetSym % 32u);
+		}
+
+		ZSTDHL_CHECKED(zstdhl_ReverseBitstream_ReadBitsComplete(bitstream, (uint8_t)matchLengthNumBits, &matchLength));
+		ZSTDHL_CHECKED(zstdhl_ReverseBitstream_ReadBitsComplete(bitstream, (uint8_t)litLengthNumBits, &litLength));
+
+		matchLength += matchLengthBaseline;
+		litLength += litLengthBaseline;
+
+		seq.m_litLength = litLength;
+		seq.m_matchLength = matchLength;
+		seq.m_offsetValueBigNum = offsetBigNum;
+		seq.m_offsetValueNumBits = offsetSym + 1;
+
+		ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_SEQUENCE, &seq));
+
+		numSequences--;
+
+		if (numSequences >= 1)
+		{
+			ZSTDHL_CHECKED(zstdhl_ReverseBitstream_ReadBitsComplete(bitstream, litLengthCell->m_numBits, &stateOffset));
+			litLengthState = litLengthCell->m_baseline + stateOffset;
+
+			ZSTDHL_CHECKED(zstdhl_ReverseBitstream_ReadBitsComplete(bitstream, matchLengthCell->m_numBits, &stateOffset));
+			matchLengthState = matchLengthCell->m_baseline + stateOffset;
+
+			ZSTDHL_CHECKED(zstdhl_ReverseBitstream_ReadBitsComplete(bitstream, offsetTableCell->m_numBits, &stateOffset));
+			offsetState = offsetTableCell->m_baseline + stateOffset;
+		}
+	}
+
+	zstdhl_Buffers_Dealloc(buffers, ZSTDHL_BUFFER_LIT_LENGTH_FSE_TABLE);
+	zstdhl_Buffers_Dealloc(buffers, ZSTDHL_BUFFER_OFFSET_FSE_TABLE);
+	zstdhl_Buffers_Dealloc(buffers, ZSTDHL_BUFFER_MATCH_LENGTH_FSE_TABLE);
+
+	if (bitstream->m_numBits > 0 || bitstream->m_bytesAvailable > 0)
+		return ZSTDHL_RESULT_HUFFMAN_STREAM_INCOMPLETELY_CONSUMED;
+
+	return ZSTDHL_RESULT_OK;
+}
+
+typedef struct zstdhl_OffsetProbDecodeState
+{
+	zstdhl_Buffers_t *m_buffers;
+	uint8_t m_alternator;
+	size_t m_currentCapacity;
+} zstdhl_OffsetProbDecodeState_t;
+
+static zstdhl_ResultCode_t zstdhl_OffsetsRequestMoreCapacity(void *userdata, uint32_t **outProbs, size_t *outNumProbs)
+{
+	zstdhl_OffsetProbDecodeState_t *state = (zstdhl_OffsetProbDecodeState_t *)userdata;
+	zstdhl_Buffers_t *buffers = state->m_buffers;
+	size_t oldCapacity = state->m_currentCapacity;
+	size_t newCapacity = 0;
+	size_t i = 0;
+	uint32_t *currentProbs = buffers->m_buffers[ZSTDHL_BUFFER_OFFSET_PROBS_1 + state->m_alternator];
+	uint32_t *newProbs = NULL;
+	void *newBufferPtr = NULL;
+
+	if ((SIZE_MAX / 2u) < state->m_currentCapacity)
+		return ZSTDHL_RESULT_OUT_OF_MEMORY;
+	
+	newCapacity = state->m_currentCapacity * 2u;
+
+	if (newCapacity < 8)
+		newCapacity = 8;
+
+	if ((SIZE_MAX / sizeof(uint32_t)) < newCapacity)
+		return ZSTDHL_RESULT_OUT_OF_MEMORY;
+	
+	ZSTDHL_CHECKED(zstdhl_Buffers_Alloc(buffers, ZSTDHL_BUFFER_OFFSET_PROBS_2 - state->m_alternator, newCapacity * sizeof(uint32_t), &newBufferPtr));
+	newProbs = (uint32_t *)newBufferPtr;
+	
+	for (i = 0; i < oldCapacity; i++)
+		newProbs[i] = currentProbs[i];
+
+	zstdhl_Buffers_Dealloc(state->m_buffers, ZSTDHL_BUFFER_OFFSET_PROBS_1 + state->m_alternator);
+
+	state->m_alternator = 1 - state->m_alternator;
+	state->m_currentCapacity = newCapacity;
+	
+	*outProbs = newProbs;
+	*outNumProbs = newCapacity;
+
+	return ZSTDHL_RESULT_OK;
+}
+
+static void zstdhl_OffsetsClear(void *userdata)
+{
+	zstdhl_OffsetProbDecodeState_t *state = (zstdhl_OffsetProbDecodeState_t *)userdata;
+	zstdhl_Buffers_t *buffers = state->m_buffers;
+
+	zstdhl_Buffers_Dealloc(buffers, ZSTDHL_BUFFER_OFFSET_PROBS_1);
+	zstdhl_Buffers_Dealloc(buffers, ZSTDHL_BUFFER_OFFSET_PROBS_2);
 }
 
 zstdhl_ResultCode_t zstdhl_ParseSequencesSection(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, zstdhl_Buffers_t *buffers, uint32_t blockSize, zstdhl_FramePersistentState_t *pstate)
@@ -1423,9 +1716,35 @@ zstdhl_ResultCode_t zstdhl_ParseSequencesSection(const zstdhl_StreamSourceObject
 	if (headerByte & 3)
 		return ZSTDHL_RESULT_SEQUENCES_COMPRESSION_MODE_RESERVED_BITS_INVALID;
 
-	ZSTDHL_CHECKED(zstdhl_ParseCompressionDef(&sliceStream, disassemblyOutput, headerByte, 6, &zstdhl_litLenSDef, &pstate->m_literalLengthsCDef, pstate->m_litLengthProbs));
-	ZSTDHL_CHECKED(zstdhl_ParseCompressionDef(&sliceStream, disassemblyOutput, headerByte, 4, &zstdhl_offsetCodeSDef, &pstate->m_offsetsCDef, pstate->m_offsetProbs));
-	ZSTDHL_CHECKED(zstdhl_ParseCompressionDef(&sliceStream, disassemblyOutput, headerByte, 2, &zstdhl_matchLenSDef, &pstate->m_matchLengthsCDef, pstate->m_matchLengthProbs));
+	{
+		zstdhl_SimpleProbDecodeState_t litLenProbHandler;
+		zstdhl_SimpleProbDecodeState_t matchLenProbHandler;
+		zstdhl_OffsetProbDecodeState_t offsetProbHandler;
+
+		offsetProbHandler.m_alternator = 0;
+		offsetProbHandler.m_buffers = buffers;
+		offsetProbHandler.m_currentCapacity = 0;
+
+		zstdhl_SimpleProbDecodeState_Init(&litLenProbHandler, pstate->m_litLengthProbs, zstdhl_litLenSDef.m_numProbs, ZSTDHL_RESULT_TOO_MANY_PROBS);
+		zstdhl_SimpleProbDecodeState_Init(&matchLenProbHandler, pstate->m_matchLengthProbs, zstdhl_matchLenSDef.m_numProbs, ZSTDHL_RESULT_TOO_MANY_PROBS);
+
+		ZSTDHL_CHECKED(zstdhl_ParseCompressionDef(&sliceStream, disassemblyOutput, headerByte, 6, &zstdhl_litLenSDef, &pstate->m_literalLengthsCDef, zstdhl_SimpleProbRequestMoreCapacity, zstdhl_SimpleProbClear, &litLenProbHandler));
+		ZSTDHL_CHECKED(zstdhl_ParseCompressionDef(&sliceStream, disassemblyOutput, headerByte, 4, &zstdhl_offsetCodeSDef, &pstate->m_offsetsCDef, zstdhl_OffsetsRequestMoreCapacity, zstdhl_OffsetsClear, &offsetProbHandler));
+		ZSTDHL_CHECKED(zstdhl_ParseCompressionDef(&sliceStream, disassemblyOutput, headerByte, 2, &zstdhl_matchLenSDef, &pstate->m_matchLengthsCDef, zstdhl_SimpleProbRequestMoreCapacity, zstdhl_SimpleProbClear, &matchLenProbHandler));
+	}
+
+	// Construct offset bignum
+	{
+		size_t sizeCalc = pstate->m_offsetsCDef.m_fseTableDef.m_numProbabilities;
+		void *offsetBigNumBuffer = NULL;
+
+		// We only have to add 1 instead of rounding up with +31 because there is an additional +1 to size
+		// due to the implicit 1 bit.
+		sizeCalc /= 32u;
+		sizeCalc += 1u;
+
+		ZSTDHL_CHECKED(zstdhl_Buffers_Alloc(buffers, ZSTDHL_BUFFER_OFFSET_BIGNUM, sizeCalc * sizeof(uint32_t), &offsetBigNumBuffer));
+	}
 
 	{
 		uint32_t bitstreamSize = (uint32_t)slice.m_sizeRemaining;
@@ -1442,8 +1761,11 @@ zstdhl_ResultCode_t zstdhl_ParseSequencesSection(const zstdhl_StreamSourceObject
 		zstdhl_Buffers_Dealloc(buffers, ZSTDHL_BUFFER_FSE_BITSTREAM);
 	}
 
-	return ZSTDHL_RESULT_OK;
+	zstdhl_Buffers_Dealloc(buffers, ZSTDHL_BUFFER_OFFSET_BIGNUM);
 
+	// Don't deallocate offset probs since they may be reused
+
+	return ZSTDHL_RESULT_OK;
 }
 
 static zstdhl_ResultCode_t zstdhl_ParseCompressedBlock(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, zstdhl_Buffers_t *buffers, uint32_t blockSize, zstdhl_FramePersistentState_t *pstate)
@@ -1460,26 +1782,19 @@ static zstdhl_ResultCode_t zstdhl_ParseCompressedBlock(const zstdhl_StreamSource
 
 zstdhl_ResultCode_t zstdhl_DisassembleImpl(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, zstdhl_Buffers_t *buffers, zstdhl_FramePersistentState_t *pstate)
 {
-#ifndef ZSTDHL_ALLOW_DECL_AFTER_STATEMENT
 	zstdhl_FrameHeaderDesc_t frameHeader;
-	zstdhl_ResultCode_t result = ZSTDHL_RESULT_OK;
-	uint8_t blockHeaderBytes[3];
-	zstdhl_BlockHeaderDesc_t blockHeader;
-	zstdhl_FrameHeaderDesc_t frameHeader;
-#endif
+	int disassembledBlockCount = 0;
 
-	ZSTDHL_DECL(zstdhl_FrameHeaderDesc_t frameHeader);
 	ZSTDHL_CHECKED(zstdhl_ParseFrameHeader(streamSource, &frameHeader));
 
-	disassemblyOutput->m_api->m_reportFrameHeaderFunc(disassemblyOutput->m_userdata, &frameHeader);
+	disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_FRAME_HEADER, &frameHeader);
 
 	for (;;)
 	{
-		ZSTDHL_DECL(uint8_t blockHeaderBytes[3]);
+		uint8_t blockHeaderBytes[3];
+		zstdhl_BlockHeaderDesc_t blockHeader;
 
 		ZSTDHL_CHECKED(zstdhl_ReadChecked(streamSource, blockHeaderBytes, 3, ZSTDHL_RESULT_BLOCK_HEADER_TRUNCATED));
-
-		ZSTDHL_DECL(zstdhl_BlockHeaderDesc_t) blockHeader;
 
 		blockHeader.m_isLastBlock = (blockHeaderBytes[0] & 1);
 		blockHeader.m_blockType = (zstdhl_BlockType_t)((blockHeaderBytes[0] >> 1) & 3);
@@ -1490,7 +1805,7 @@ zstdhl_ResultCode_t zstdhl_DisassembleImpl(const zstdhl_StreamSourceObject_t *st
 		if (blockHeader.m_blockType == ZSTDHL_BLOCK_TYPE_INVALID)
 			return ZSTDHL_RESULT_BLOCK_TYPE_INVALID;
 
-		disassemblyOutput->m_api->m_reportBlockHeaderFunc(disassemblyOutput->m_userdata, &blockHeader);
+		disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_BLOCK_HEADER, &blockHeader);
 
 		switch (blockHeader.m_blockType)
 		{
@@ -1508,7 +1823,10 @@ zstdhl_ResultCode_t zstdhl_DisassembleImpl(const zstdhl_StreamSourceObject_t *st
 			return ZSTDHL_RESULT_INTERNAL_ERROR;
 		}
 
-		break;
+		disassembledBlockCount++;
+
+		if (blockHeader.m_isLastBlock)
+			break;
 	}
 
 	return ZSTDHL_RESULT_OK;
@@ -1520,8 +1838,8 @@ zstdhl_ResultCode_t zstdhl_BuildFSEDistributionTable_ZStd(zstdhl_FSETable_t *fse
 	uint32_t numCells = (1 << accuracyLog);
 	zstdhl_FSETableCell_t *cells = fseTable->m_cells;
 	uint32_t numNotLowProbCells = numCells;
-	uint32_t i = 0;
-	uint16_t numProbs = fseTableDef->m_numProbabilities;
+	size_t i = 0;
+	size_t numProbs = fseTableDef->m_numProbabilities;
 	const uint32_t *probs = fseTableDef->m_probabilities;
 
 	uint32_t advanceStep = (numCells >> 1) + (numCells >> 3) + 3;
@@ -1581,7 +1899,7 @@ zstdhl_ResultCode_t zstdhl_BuildFSEDistributionTable_ZStd(zstdhl_FSETable_t *fse
 	for (i = 0; i < numCells; i++)
 	{
 		zstdhl_FSETableCell_t *cell = cells + i;
-		uint8_t symbol = cell->m_sym;
+		size_t symbol = cell->m_sym;
 		zstdhl_FSESymbolTemp_t *symTemp = symbolTemps + symbol;
 
 		cell->m_baseline = symTemp->m_baseline;
@@ -1604,120 +1922,6 @@ zstdhl_ResultCode_t zstdhl_BuildFSEDistributionTable_ZStd(zstdhl_FSETable_t *fse
 	}
 
 	return ZSTDHL_RESULT_OK;
-}
-
-zstdhl_ResultCode_t zstdhl_BuildFSEDistributionTable_RANS(zstdhl_FSETable_t *fseTable, const zstdhl_FSETableDef_t *fseTableDef, zstdhl_FSESymbolTemp_t *symbolTemps)
-{
-	uint8_t accuracyLog = fseTableDef->m_accuracyLog;
-	uint32_t numCells = (1 << accuracyLog);
-	zstdhl_FSETableCell_t *cells = fseTable->m_cells;
-	uint32_t numNotLowProbCells = numCells;
-	uint32_t i = 0;
-	uint16_t numProbs = fseTableDef->m_numProbabilities;
-	const uint32_t *probs = fseTableDef->m_probabilities;
-	uint32_t start = 0;
-
-	uint32_t cellMask = numCells - 1;
-
-	for (i = 0; i < numProbs; i++)
-	{
-		zstdhl_FSESymbolTemp_t *sym = symbolTemps + i;
-		uint32_t effProb = (probs[i] == ZSTDHL_LESS_THAN_ONE_VALUE) ? 1 : probs[i];
-
-		if (effProb > 0)
-		{
-			sym->m_baseline = start;
-
-			while (effProb > 0)
-			{
-				cells[start].m_sym = i;
-				start++;
-				effProb--;
-			}
-		}
-	}
-
-	for (i = 0; i < numCells; i++)
-	{
-		uint8_t sym = cells[i].m_sym;
-		zstdhl_FSESymbolTemp_t *symTemp = symbolTemps + sym;
-		uint32_t effProb = (probs[sym] == ZSTDHL_LESS_THAN_ONE_VALUE) ? 1 : probs[sym];
-
-		// Implicit 1 in top bit
-		uint32_t evolvedState = effProb + i - symbolTemps[sym].m_baseline;
-		uint32_t initialEvolvedState = evolvedState;
-
-		cells[i].m_numBits = 0;
-
-		while ((evolvedState >> accuracyLog) == 0)
-		{
-			cells[i].m_numBits++;
-			evolvedState <<= 1;
-		}
-
-		cells[i].m_baseline = (evolvedState & cellMask);
-	}
-
-	return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
-}
-
-
-zstdhl_ResultCode_t zstdhl_BuildFSEDistributionTable_Hybrid(zstdhl_FSETable_t *fseTable, const zstdhl_FSETableDef_t *fseTableDef, zstdhl_FSESymbolTemp_t *symbolTemps)
-{
-	uint8_t accuracyLog = fseTableDef->m_accuracyLog;
-	uint32_t numCells = (1 << accuracyLog);
-	zstdhl_FSETableCell_t *cells = fseTable->m_cells;
-	uint32_t numNotLowProbCells = numCells;
-	uint32_t i = 0;
-	uint16_t numProbs = fseTableDef->m_numProbabilities;
-	const uint32_t *probs = fseTableDef->m_probabilities;
-	uint32_t start = 0;
-	uint32_t advanceStep = (numCells >> 1) + (numCells >> 3) + 3;
-
-	uint32_t cellMask = numCells - 1;
-
-	for (i = 0; i < numProbs; i++)
-	{
-		zstdhl_FSESymbolTemp_t *sym = symbolTemps + i;
-		uint32_t effProb = (probs[i] == ZSTDHL_LESS_THAN_ONE_VALUE) ? 1 : probs[i];
-
-		if (effProb > 0)
-		{
-			sym->m_baseline = start;
-
-			while (effProb > 0)
-			{
-				cells[(start * advanceStep) & cellMask].m_sym = i;
-				start++;
-				effProb--;
-			}
-		}
-	}
-
-	for (i = 0; i < numCells; i++)
-	{
-		uint32_t cellIndex = ((i * advanceStep) & cellMask);
-		zstdhl_FSETableCell_t *cell = cells + cellIndex;
-		uint8_t sym = cell->m_sym;
-		zstdhl_FSESymbolTemp_t *symTemp = symbolTemps + sym;
-		uint32_t effProb = (probs[sym] == ZSTDHL_LESS_THAN_ONE_VALUE) ? 1 : probs[sym];
-
-		// Implicit 1 in top bit
-		uint32_t evolvedState = effProb + i - symbolTemps[sym].m_baseline;
-		uint32_t initialEvolvedState = evolvedState;
-
-		cell->m_numBits = 0;
-
-		while ((evolvedState >> accuracyLog) == 0)
-		{
-			cell->m_numBits++;
-			evolvedState <<= 1;
-		}
-
-		cell->m_baseline = (evolvedState & cellMask);
-	}
-
-	return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
 }
 
 ZSTDHL_EXTERN zstdhl_ResultCode_t zstdhl_Disassemble(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, const zstdhl_MemoryAllocatorObject_t *alloc)

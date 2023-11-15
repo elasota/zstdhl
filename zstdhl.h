@@ -118,6 +118,9 @@ typedef enum zstdhl_ResultCode
 	ZSTDHL_RESULT_NOT_ENOUGH_BITS,
 
 	ZSTDHL_RESULT_FAIL,
+
+	ZSTDHL_RESULT_SOFT_FAULT,
+	ZSTDHL_RESULT_REVERSE_BITSTREAM_TRUNCATED_SOFT_FAULT,
 } zstdhl_ResultCode_t;
 
 typedef struct zstdhl_StreamSourceAPI
@@ -135,7 +138,7 @@ typedef struct zstdhl_FSETableDef
 {
 	uint8_t m_accuracyLog;
 	const uint32_t *m_probabilities;
-	uint16_t m_numProbabilities;
+	size_t m_numProbabilities;
 } zstdhl_FSETableDef_t;
 
 typedef struct zstdhl_HuffmanTreeWeightDesc
@@ -161,8 +164,8 @@ typedef struct zstdhl_HuffmanTreeDesc
 
 typedef struct zstdhl_FSETableCell
 {
+	size_t m_sym;
 	uint16_t m_baseline;
-	uint8_t m_sym;
 	uint8_t m_numBits;
 } zstdhl_FSETableCell_t;
 
@@ -269,27 +272,60 @@ typedef struct zstdhl_BlockHeaderDesc
 	uint32_t m_blockSize;
 } zstdhl_BlockHeaderDesc_t;
 
-typedef struct zstdhl_DisassemblyOutputAPI
+typedef struct zstdhl_BlockRLEDesc
 {
-	zstdhl_ResultCode_t (*m_reportFrameHeaderFunc)(void *userdata, const zstdhl_FrameHeaderDesc_t *frameHeader);
-	zstdhl_ResultCode_t (*m_reportBlockHeaderFunc)(void *userdata, const zstdhl_BlockHeaderDesc_t *blockHeader);
-	zstdhl_ResultCode_t (*m_reportLiteralsSectionFunc)(void *userdata, const zstdhl_LiteralsSectionDesc_t *litSection);
-	zstdhl_ResultCode_t (*m_reportSequencesSectionFunc)(void *userdata, const zstdhl_SequencesSectionDesc_t *seqSection);
-	zstdhl_ResultCode_t (*m_reportBlockRLEDataFunc)(void *userdata, uint8_t value, size_t count);
-	zstdhl_ResultCode_t (*m_reportBlockUncompressedDataFunc)(void *userdata, const void *data, size_t size);
+	uint8_t m_value;
+	size_t m_count;
+} zstdhl_BlockRLEDesc_t;
 
-	zstdhl_ResultCode_t (*m_reportFSETableStartFunc)(void *userdata);
-	zstdhl_ResultCode_t (*m_reportFSETableEndFunc)(void *userdata);
-	zstdhl_ResultCode_t (*m_reportFSEProbabilityFunc)(void *userdata, uint32_t probability, int numRepeats);
+typedef struct zstdhl_BlockUncompressedDesc
+{
+	const void *m_data;
+	size_t m_size;
+} zstdhl_BlockUncompressedDesc_t;
 
-	zstdhl_ResultCode_t (*m_reportWasteBitsFunc)(void *userdata, uint32_t wasteBits);
+typedef struct zstdhl_ProbabilityDesc
+{
+	uint32_t m_prob;
+	size_t m_repeatCount;
+} zstdhl_ProbabilityDesc_t;
 
-	zstdhl_ResultCode_t (*m_reportHuffmanTableDescFunc)(void *userdata, zstdhl_HuffmanTreeDesc_t *treeDesc);
-} zstdhl_DisassemblyOutputAPI_t;
+typedef struct zstdhl_WasteBitsDesc
+{
+	uint32_t m_wasteBits;
+} zstdhl_WasteBitsDesc_t;
+
+typedef struct zstdhl_SequenceDesc
+{
+	uint32_t m_litLength;
+	uint32_t m_matchLength;
+
+	uint32_t *m_offsetValueBigNum;
+	size_t m_offsetValueNumBits;
+} zstdhl_SequenceDesc_t;
+
+enum zstdhl_ElementType
+{
+	ZSTDHL_ELEMENT_TYPE_FRAME_HEADER,				// zstdhl_FrameHeaderDesc_t
+	ZSTDHL_ELEMENT_TYPE_BLOCK_HEADER,				// zstdhl_BlockHeaderDesc_t
+	ZSTDHL_ELEMENT_TYPE_LITERALS_SECTION,			// zstdhl_LiteralsSectionDesc_t
+	ZSTDHL_ELEMENT_TYPE_SEQUENCES_SECTION,			// zstdhl_SequencesSectionDesc_t
+	ZSTDHL_ELEMENT_TYPE_BLOCK_RLE_DATA,				// zstdhl_BlockRLEDesc_t
+	ZSTDHL_ELEMENT_TYPE_BLOCK_UNCOMPRESSED_DATA,	// zstdhl_BlockUncompressedDesc
+
+	ZSTDHL_ELEMENT_TYPE_FSE_TABLE_START,			// Nothing
+	ZSTDHL_ELEMENT_TYPE_FSE_TABLE_END,				// Nothing
+	ZSTDHL_ELEMENT_TYPE_FSE_PROBABILITY,			// zstdhl_ProbabilityDesc_t
+
+	ZSTDHL_ELEMENT_TYPE_WASTE_BITS,					// zstdhl_WasteBitsDesc_t
+	ZSTDHL_ELEMENT_TYPE_HUFFMAN_TREE,				// zstdhl_HuffmanTreeDesc_t
+
+	ZSTDHL_ELEMENT_TYPE_SEQUENCE,					// zstdhl_SequenceDesc_t
+} zstdhl_ElementType_t;
 
 typedef struct zstdhl_DisassemblyOutputObject
 {
-	const zstdhl_DisassemblyOutputAPI_t *m_api;
+	zstdhl_ResultCode_t (*m_reportDisassembledElementFunc)(void *userdata, int elementType, const void *elementData);
 	void *m_userdata;
 } zstdhl_DisassemblyOutputObject_t;
 
