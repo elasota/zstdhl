@@ -47,6 +47,7 @@ typedef enum zstdhl_LiteralsSectionType
 
 typedef enum zstdhl_HuffmanStreamMode
 {
+	ZSTDHL_HUFFMAN_STREAM_MODE_NONE,
 	ZSTDHL_HUFFMAN_STREAM_MODE_1_STREAM,
 	ZSTDHL_HUFFMAN_STREAM_MODE_4_STREAMS,
 } zstdhl_HuffmanStreamMode_t;
@@ -110,27 +111,41 @@ typedef enum zstdhl_ResultCode
 	ZSTDHL_RESULT_SEQUENCE_COMPRESSION_DEF_TRUNCATED,
 	ZSTDHL_RESULT_SEQUENCE_RLE_SYMBOL_INVALID,
 	ZSTDHL_RESULT_SEQUENCE_BITSTREAM_TOO_SMALL,
+	ZSTDHL_RESULT_LITERALS_SECTION_TRUNCATED,
+	ZSTDHL_RESULT_FSE_TABLE_INVALID,
+	ZSTDHL_RESULT_FSE_TABLE_MISSING_SYMBOL,
 
 	ZSTDHL_RESULT_INTERNAL_ERROR,
 	ZSTDHL_RESULT_NOT_YET_IMPLEMENTED,
 	ZSTDHL_RESULT_OUT_OF_MEMORY,
+	ZSTDHL_RESULT_INTEGER_OVERFLOW,
 
 	ZSTDHL_RESULT_NOT_ENOUGH_BITS,
 
 	ZSTDHL_RESULT_FAIL,
 
+	ZSTDHL_RESULT_OUTPUT_FAILED,
+	ZSTDHL_RESULT_INPUT_FAILED,
+	ZSTDHL_RESULT_INVALID_VALUE,
+
 	ZSTDHL_RESULT_SOFT_FAULT,
 	ZSTDHL_RESULT_REVERSE_BITSTREAM_TRUNCATED_SOFT_FAULT,
 } zstdhl_ResultCode_t;
 
-typedef struct zstdhl_StreamSourceAPI
+typedef enum zstdhl_OffsetType
 {
-	size_t(*m_readBytesFunc)(void *userdata, void *dest, size_t numBytes);
-} zstdhl_StreamSourceAPI_t;
+	ZSTDHL_OFFSET_TYPE_REPEAT_1,
+	ZSTDHL_OFFSET_TYPE_REPEAT_2,
+	ZSTDHL_OFFSET_TYPE_REPEAT_3,
+
+	ZSTDHL_OFFSET_TYPE_REPEAT_1_MINUS_1,
+
+	ZSTDHL_OFFSET_TYPE_SPECIFIED,
+} zstdhl_OffsetType_t;
 
 typedef struct zstdhl_StreamSourceObject
 {
-	const zstdhl_StreamSourceAPI_t *m_api;
+	size_t (*m_readBytesFunc)(void *userdata, void *dest, size_t numBytes);
 	void *m_userdata;
 } zstdhl_StreamSourceObject_t;
 
@@ -176,6 +191,11 @@ typedef struct zstdhl_FSETable
 	uint8_t m_accuracyLog;
 } zstdhl_FSETable_t;
 
+typedef struct zstdhl_FSETableEnc
+{
+	uint16_t *m_nextStates;	// [(nextSymbol << accuracyLog) + prevState]
+} zstdhl_FSETableEnc_t;
+
 typedef struct zstdhl_FSESymbolTemp
 {
 	uint32_t m_baseline;
@@ -208,7 +228,6 @@ typedef struct zstdhl_HuffmanTree
 typedef struct zstdhl_HuffmanTableEncEntry
 {
 	uint16_t m_bits;
-	uint8_t m_symbol;
 	uint8_t m_numBits;
 } zstdhl_HuffmanTableEncEntry_t;
 
@@ -229,28 +248,29 @@ typedef struct zstdhl_HuffmanTableDec
 	uint8_t m_maxBits;
 } zstdhl_HuffmanTableDec_t;
 
-typedef struct zstdhl_LiteralsSectionDesc
+typedef struct zstdhl_LiteralsSectionHeader
 {
 	zstdhl_LiteralsSectionType_t m_sectionType;
 	uint32_t m_regeneratedSize;
 	uint32_t m_compressedSize;
+} zstdhl_LiteralsSectionHeader_t;
 
-	zstdhl_HuffmanTreeDesc_t m_huffmanTreeDesc;
+typedef struct zstdhl_LiteralsSectionDesc
+{
 	zstdhl_HuffmanStreamMode_t m_huffmanStreamMode;
+
+	uint32_t m_huffmanStreamSizes[4];
+
+	size_t m_numValues;
+	zstdhl_StreamSourceObject_t *m_decompressedLiteralsStream;
 } zstdhl_LiteralsSectionDesc_t;
 
 typedef struct zstdhl_SequencesSectionDesc
 {
 	uint32_t m_numSequences;
-	zstdhl_SequencesCompressionMode_t m_literalLengthsMode;
 	zstdhl_SequencesCompressionMode_t m_offsetsMode;
 	zstdhl_SequencesCompressionMode_t m_matchLengthsMode;
-
-	zstdhl_FSETableDef_t m_literalLengthsTable;
-	zstdhl_FSETableDef_t m_offsetsTable;
-	zstdhl_FSETableDef_t m_matchLengthsTable;
-
-	uint32_t m_probabilities[ZSTDHL_SEQ_CONST_NUM_MATCH_LENGTH_CODES + ZSTDHL_SEQ_CONST_NUM_LITERAL_LENGTH_CODES + ZSTDHL_SEQ_CONST_NUM_OFFSET_CODES];
+	zstdhl_SequencesCompressionMode_t m_literalLengthsMode;
 } zstdhl_SequencesSectionDesc_t;
 
 typedef struct zstdhl_FrameHeaderDesc
@@ -292,7 +312,8 @@ typedef struct zstdhl_ProbabilityDesc
 
 typedef struct zstdhl_WasteBitsDesc
 {
-	uint32_t m_wasteBits;
+	uint8_t m_numBits;
+	uint8_t m_bits;
 } zstdhl_WasteBitsDesc_t;
 
 typedef struct zstdhl_SequenceDesc
@@ -302,25 +323,37 @@ typedef struct zstdhl_SequenceDesc
 
 	uint32_t *m_offsetValueBigNum;
 	size_t m_offsetValueNumBits;
+	zstdhl_OffsetType_t m_offsetType;
 } zstdhl_SequenceDesc_t;
 
-enum zstdhl_ElementType
+typedef struct zstdhl_FSETableStartDesc
+{
+	uint8_t m_accuracyLog;
+} zstdhl_FSETableStartDesc_t;
+
+typedef enum zstdhl_ElementType
 {
 	ZSTDHL_ELEMENT_TYPE_FRAME_HEADER,				// zstdhl_FrameHeaderDesc_t
 	ZSTDHL_ELEMENT_TYPE_BLOCK_HEADER,				// zstdhl_BlockHeaderDesc_t
+	ZSTDHL_ELEMENT_TYPE_LITERALS_SECTION_HEADER,	// zstdhl_LiteralsSectionHeader_t
 	ZSTDHL_ELEMENT_TYPE_LITERALS_SECTION,			// zstdhl_LiteralsSectionDesc_t
 	ZSTDHL_ELEMENT_TYPE_SEQUENCES_SECTION,			// zstdhl_SequencesSectionDesc_t
 	ZSTDHL_ELEMENT_TYPE_BLOCK_RLE_DATA,				// zstdhl_BlockRLEDesc_t
-	ZSTDHL_ELEMENT_TYPE_BLOCK_UNCOMPRESSED_DATA,	// zstdhl_BlockUncompressedDesc
+	ZSTDHL_ELEMENT_TYPE_BLOCK_UNCOMPRESSED_DATA,	// zstdhl_BlockUncompressedDesc_t
 
-	ZSTDHL_ELEMENT_TYPE_FSE_TABLE_START,			// Nothing
+	ZSTDHL_ELEMENT_TYPE_FSE_TABLE_START,			// zstdhl_FSETableStartDesc_t
 	ZSTDHL_ELEMENT_TYPE_FSE_TABLE_END,				// Nothing
 	ZSTDHL_ELEMENT_TYPE_FSE_PROBABILITY,			// zstdhl_ProbabilityDesc_t
+
+	ZSTDHL_ELEMENT_TYPE_SEQUENCE_RLE_BYTE,			// uint8_t
 
 	ZSTDHL_ELEMENT_TYPE_WASTE_BITS,					// zstdhl_WasteBitsDesc_t
 	ZSTDHL_ELEMENT_TYPE_HUFFMAN_TREE,				// zstdhl_HuffmanTreeDesc_t
 
 	ZSTDHL_ELEMENT_TYPE_SEQUENCE,					// zstdhl_SequenceDesc_t
+
+	ZSTDHL_ELEMENT_TYPE_BLOCK_END,					// Nothing
+	ZSTDHL_ELEMENT_TYPE_FRAME_END,					// Nothing
 } zstdhl_ElementType_t;
 
 typedef struct zstdhl_DisassemblyOutputObject
@@ -329,28 +362,127 @@ typedef struct zstdhl_DisassemblyOutputObject
 	void *m_userdata;
 } zstdhl_DisassemblyOutputObject_t;
 
-typedef struct zstdhl_MemoryAllocatorAPI
-{
-	void *(*m_allocFunc)(void *userdata, size_t size);
-	void (*m_freeFunc)(void *userdata, void *ptr);
-} zstdhl_MemoryAllocatorAPI_t;
-
-
 typedef struct zstdhl_MemoryAllocatorObject
 {
-	const zstdhl_MemoryAllocatorAPI_t *m_api;
+	void *(*m_reallocFunc)(void *userdata, void *ptr, size_t newSize);
 	void *m_userdata;
 } zstdhl_MemoryAllocatorObject_t;
 
+typedef struct zstdhl_Vector
+{
+	zstdhl_MemoryAllocatorObject_t m_alloc;
+	void *m_data;
+	void *m_dataEnd;
+	size_t m_count;
+	size_t m_capacity;
+	size_t m_elementSize;
+	size_t m_maxCapacity;
+	size_t m_size;
+} zstdhl_Vector_t;
+
+typedef struct zstdhl_FSEEncStack
+{
+	zstdhl_Vector_t m_statesStackVector;
+} zstdhl_FSEEncStack_t;
+
+typedef struct zstdhl_MemBufferStreamSource
+{
+	const void *m_data;
+	size_t m_sizeRemaining;
+} zstdhl_MemBufferStreamSource_t;
+
+typedef struct zstdhl_EncFrameHeaderDesc
+{
+	zstdhl_FrameHeaderDesc_t m_frameHeaderDesc;
+
+	uint8_t m_autoFrameContentSizeFlag;
+} zstdhl_EncFrameHeaderDesc_t;
+
+typedef struct zstdhl_EncSeqCompressionDesc
+{
+	const zstdhl_FSETableDef_t *m_fseProbs;
+	uint8_t m_rleByte;
+} zstdhl_EncSeqCompressionDesc_t;
+
+typedef struct zstdhl_SequenceCollectionObject
+{
+	zstdhl_ResultCode_t (*m_getNextSequence)(void *userdata, zstdhl_SequenceDesc_t *sequence);
+	void *m_userdata;
+} zstdhl_SequenceCollectionObject_t;
+
+typedef struct zstdhl_EncBlockDesc
+{
+	zstdhl_BlockHeaderDesc_t m_blockHeader;
+	zstdhl_LiteralsSectionHeader_t m_litSectionHeader;
+	zstdhl_LiteralsSectionDesc_t m_litSectionDesc;
+	zstdhl_SequencesSectionDesc_t m_seqSectionDesc;
+
+	zstdhl_HuffmanTreeDesc_t m_huffmanTreeDesc;
+
+	zstdhl_EncSeqCompressionDesc_t m_literalLengthsCompressionDesc;
+	zstdhl_EncSeqCompressionDesc_t m_offsetsModeCompressionDesc;
+	zstdhl_EncSeqCompressionDesc_t m_matchLengthsCompressionDesc;
+
+	zstdhl_SequenceCollectionObject_t m_seqCollection;
+
+	uint8_t m_autoBlockSizeFlag;
+	uint8_t m_autoLitSizeFlag;
+	uint8_t m_autoHuffmanStreamSizesFlags[4];
+} zstdhl_EncBlockDesc_t;
+
+typedef struct zstdhl_EncoderOutputObject
+{
+	zstdhl_ResultCode_t (*m_writeControlWordFunc)(void *userdata, uint32_t controlWord);
+	zstdhl_ResultCode_t (*m_writeBitstreamFunc)(void *userdata, const void *data, size_t size);
+	void *m_userdata;
+} zstdhl_EncoderOutputObject_t;
+
+typedef struct zstdhl_SubstreamCompressionStructureDef
+{
+	uint8_t m_maxAccuracyLog;
+	uint8_t m_defaultAccuracyLog;
+	uint8_t m_numProbs;
+	const uint32_t *m_defaultProbs;
+} zstdhl_SubstreamCompressionStructureDef_t;
 
 #ifdef __cplusplus
 extern "C"
 {
 #endif
+
 zstdhl_ResultCode_t zstdhl_Disassemble(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, const zstdhl_MemoryAllocatorObject_t *alloc);
 uint32_t zstdhl_GetLessThanOneConstant(void);
 zstdhl_ResultCode_t zstdhl_BuildFSEDistributionTable_ZStd(zstdhl_FSETable_t *fseTable, const zstdhl_FSETableDef_t *fseTableDef, zstdhl_FSESymbolTemp_t *symbolTemps);
-zstdhl_ResultCode_t zstdhl_BuildFSEDistributionTable_RANS(zstdhl_FSETable_t *fseTable, const zstdhl_FSETableDef_t *fseTableDef, zstdhl_FSESymbolTemp_t *symbolTemps);
+void zstdhl_BuildFSEEncodeTable(zstdhl_FSETableEnc_t *encTable, const zstdhl_FSETable_t *table, size_t numSymbols);
+zstdhl_ResultCode_t zstdhl_EncodeFSEValue(zstdhl_FSEEncStack_t *stack, const zstdhl_FSETableEnc_t *encTable, const zstdhl_FSETable_t *table, uint16_t value);
+
+void zstdhl_FSEEncStack_Init(zstdhl_FSEEncStack_t *stack, const zstdhl_MemoryAllocatorObject_t *alloc);
+zstdhl_ResultCode_t zstdhl_FSEEncStack_Pop(zstdhl_FSEEncStack_t *stack, uint16_t *outState);
+void zstdhl_FSEEncStack_Destroy(zstdhl_FSEEncStack_t *stack);
+
+const zstdhl_SubstreamCompressionStructureDef_t *zstdhl_GetDefaultLitLengthFSEProperties(void);
+const zstdhl_SubstreamCompressionStructureDef_t *zstdhl_GetDefaultMatchLengthFSEProperties(void);
+const zstdhl_SubstreamCompressionStructureDef_t *zstdhl_GetDefaultOffsetFSEProperties(void);
+
+zstdhl_ResultCode_t zstdhl_EncodeOffsetCode(uint32_t value, uint32_t *outFSEValue, uint32_t *outExtraValue, uint8_t *outExtraBits);
+zstdhl_ResultCode_t zstdhl_EncodeMatchLength(uint32_t value, uint32_t *outFSEValue, uint32_t *outExtraValue, uint8_t *outExtraBits);
+zstdhl_ResultCode_t zstdhl_EncodeLitLength(uint32_t value, uint32_t *outFSEValue, uint32_t *outExtraValue, uint8_t *outExtraBits);
+
+zstdhl_ResultCode_t zstdhl_GenerateHuffmanDecodeTable(const zstdhl_HuffmanTreeDesc_t *treeDesc, zstdhl_HuffmanTableDec_t *decTable);
+zstdhl_ResultCode_t zstdhl_GenerateHuffmanEncodeTable(const zstdhl_HuffmanTreeDesc_t *treeDesc, zstdhl_HuffmanTableEnc_t *encTable);
+zstdhl_ResultCode_t zstdhl_ExpandHuffmanWeightTable(const zstdhl_HuffmanTreePartialWeightDesc_t *partialDesc, zstdhl_HuffmanTreeWeightDesc_t *fullDesc);
+
+zstdhl_ResultCode_t zstdhl_ReadChecked(const zstdhl_StreamSourceObject_t *streamSource, void *dest, size_t numBytes, zstdhl_ResultCode_t failureResult);
+
+void zstdhl_Vector_Init(zstdhl_Vector_t *vec, size_t elementSize, const zstdhl_MemoryAllocatorObject_t *alloc);
+zstdhl_ResultCode_t zstdhl_Vector_Append(zstdhl_Vector_t *vec, const void *data, size_t count);
+void zstdhl_Vector_Clear(zstdhl_Vector_t *vec);
+void zstdhl_Vector_Shrink(zstdhl_Vector_t *vec, size_t newCount);
+void zstdhl_Vector_Reset(zstdhl_Vector_t *vec);
+void zstdhl_Vector_Destroy(zstdhl_Vector_t *vec);
+
+void zstdhl_MemBufferStreamSource_Init(zstdhl_MemBufferStreamSource_t *streamSource, const void *data, size_t size);
+size_t zstdhl_MemBufferStreamSource_ReadBytes(void *userdata, void *dest, size_t numBytes);
 
 #ifdef __cplusplus
 }
