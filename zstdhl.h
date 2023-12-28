@@ -432,7 +432,6 @@ typedef struct zstdhl_EncBlockDesc
 
 typedef struct zstdhl_EncoderOutputObject
 {
-	zstdhl_ResultCode_t (*m_writeControlWordFunc)(void *userdata, uint32_t controlWord);
 	zstdhl_ResultCode_t (*m_writeBitstreamFunc)(void *userdata, const void *data, size_t size);
 	void *m_userdata;
 } zstdhl_EncoderOutputObject_t;

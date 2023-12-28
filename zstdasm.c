@@ -43,7 +43,6 @@ size_t ReadBytes(void *userdata, void *dest, size_t numBytes)
 typedef struct GstdEncodeState
 {
 	FILE *m_f;
-	zstdhl_Vector_t m_controlWordVector;
 } GstdEncodeState_t;
 
 zstdhl_ResultCode_t WriteBytes(void *userdata, const void *data, size_t numBytes)
@@ -54,25 +53,6 @@ zstdhl_ResultCode_t WriteBytes(void *userdata, const void *data, size_t numBytes
 		return ZSTDHL_RESULT_OK;
 
 	return ZSTDHL_RESULT_OUTPUT_FAILED;
-}
-
-zstdhl_ResultCode_t WriteControlWord(void *userdata, uint32_t controlWord)
-{
-	GstdEncodeState_t *encodeState = (GstdEncodeState_t *)userdata;
-	uint8_t cwBytes[4];
-
-	cwBytes[0] = (controlWord >> 0) & 0xff;
-	cwBytes[1] = (controlWord >> 8) & 0xff;
-	cwBytes[2] = (controlWord >> 16) & 0xff;
-	cwBytes[3] = (controlWord >> 24) & 0xff;
-
-	ZSTDASM_CHECKED(zstdhl_Vector_Append(&encodeState->m_controlWordVector, cwBytes, 1));
-
-	return ZSTDHL_RESULT_OK;
-}
-
-void CheckMem()
-{
 }
 
 void *Realloc(void *userdata, void *ptr, size_t numBytes)
@@ -757,11 +737,9 @@ int main(int argc, const char **argv)
 		memAllocObj.m_reallocFunc = Realloc;
 		memAllocObj.m_userdata = NULL;
 
-		zstdhl_Vector_Init(&encOutObject.m_controlWordVector, 1, &memAllocObj);
 		encOutObject.m_f = outputF;
 
 		encOut.m_writeBitstreamFunc = WriteBytes;
-		encOut.m_writeControlWordFunc = WriteControlWord;
 		encOut.m_userdata = &encOutObject;
 
 		result = gstd_Encoder_Create(&encOut, 32, &memAllocObj, &encState);
@@ -774,8 +752,6 @@ int main(int argc, const char **argv)
 
 			gstd_Encoder_Destroy(encState);
 		}
-
-		zstdhl_Vector_Destroy(&encOutObject.m_controlWordVector);
 	}
 
 	fclose(inputF);

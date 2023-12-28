@@ -10,7 +10,7 @@ typedef struct gstd_LaneState gstd_LaneState_t;
 #define GSTD_SYNC_COMMAND_PEEK_ALL_FLAG	0x40
 
 #define GSTD_CONTROL_DECOMPRESSED_SIZE_OFFSET	0
-#define GSTD_CONTROL_LAST_BLOCK_BIT_OFFSET		22
+#define GSTD_CONTROL_MORE_BLOCKS_BIT_OFFSET		22
 #define GSTD_CONTROL_AUX_BIT_OFFSET				23
 #define GSTD_CONTROL_LIT_SECTION_TYPE_OFFSET	24
 #define GSTD_CONTROL_LIT_LENGTH_MODE_OFFSET		26
@@ -64,6 +64,7 @@ typedef struct gstd_EncoderState
 	size_t m_numLanes;
 
 	gstd_InterleavedBitstream_t m_rawBytesBitstream;
+	gstd_InterleavedBitstream_t m_controlWordBitstream;
 
 	gstd_LaneState_t *m_laneStates;
 
@@ -172,6 +173,7 @@ zstdhl_ResultCode_t gstd_EncoderState_Init(gstd_EncoderState_t *encState, const 
 		gstd_LaneState_Init(encState->m_laneStates + i, alloc);
 
 	gstd_InterleavedBitstream_Init(&encState->m_rawBytesBitstream);
+	gstd_InterleavedBitstream_Init(&encState->m_controlWordBitstream);
 
 	encState->m_huffWeightTableDef.m_probabilities = encState->m_huffWeightProbs;
 	encState->m_huffWeightTableDef.m_numProbabilities = 0;
@@ -1040,6 +1042,8 @@ zstdhl_ResultCode_t gstd_Encoder_AddBlock(gstd_EncoderState_t *enc, const zstdhl
 	uint32_t decompressedSize = 0;
 	uint32_t auxBit = 0;
 
+	ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_controlWordBitstream, 32));
+
 	switch (block->m_blockHeader.m_blockType)
 	{
 	case ZSTDHL_BLOCK_TYPE_RAW:
@@ -1058,13 +1062,13 @@ zstdhl_ResultCode_t gstd_Encoder_AddBlock(gstd_EncoderState_t *enc, const zstdhl
 		return ZSTDHL_RESULT_BLOCK_TYPE_INVALID;
 	};
 
-	if (block->m_blockHeader.m_isLastBlock)
-		controlWord |= (1 << GSTD_CONTROL_LAST_BLOCK_BIT_OFFSET);
+	if (!block->m_blockHeader.m_isLastBlock)
+		controlWord |= (1 << GSTD_CONTROL_MORE_BLOCKS_BIT_OFFSET);
 
 	controlWord |= (decompressedSize << GSTD_CONTROL_DECOMPRESSED_SIZE_OFFSET);
 	controlWord |= (auxBit << GSTD_CONTROL_AUX_BIT_OFFSET);
 
-	ZSTDHL_CHECKED(enc->m_output->m_writeControlWordFunc(enc->m_output->m_userdata, controlWord));
+	ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_controlWordBitstream, controlWord, 32));
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -1093,6 +1097,12 @@ zstdhl_ResultCode_t gstd_Encoder_Finish(gstd_EncoderState_t *enc)
 	}
 
 	ZSTDHL_CHECKED(gstd_Encoder_FlushBitstream(enc, &enc->m_rawBytesBitstream));
+
+	// Control words should always be 32-bit
+	if (enc->m_controlWordBitstream.m_numBits != 0)
+		return ZSTDHL_RESULT_INTERNAL_ERROR;
+
+	ZSTDHL_CHECKED(gstd_Encoder_FlushBitstream(enc, &enc->m_controlWordBitstream));
 
 	ZSTDHL_CHECKED(enc->m_output->m_writeBitstreamFunc(enc->m_output->m_userdata, enc->m_pendingOutputVector.m_data, enc->m_pendingOutputVector.m_count));
 
