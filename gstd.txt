@@ -41,7 +41,8 @@ FSE tables do not have a special less-than-one probability as they do in Zstd.
 
 The bit consumption of each probability is equal to number of bits needed to
 encode the largest value.  Gstd doesn't use a variable-size scheme like Zstd
-does.
+does.  If a value causes an overflow, it is instead clamped to the maximum
+permissible value.
 
 The baseline and bit consumption of each state value is based on the order that
 the entries are inserted into the table instead of the order that the entries

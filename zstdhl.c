@@ -41,11 +41,6 @@ SOFTWARE.
 
 #define ZSTDHL_LESS_THAN_ONE_VALUE ((uint32_t)0xffffffffu)
 
-void CheckMem();
-
-static int blockID = 0;
-static int sequenceID = 0;
-
 int zstdhl_Log2_8(uint8_t value)
 {
 	int result = 0;
@@ -2030,8 +2025,6 @@ zstdhl_ResultCode_t zstdhl_DisassembleImpl(const zstdhl_StreamSourceObject_t *st
 		blockHeader.m_blockSize |= (blockHeaderBytes[1] << 5);
 		blockHeader.m_blockSize |= (blockHeaderBytes[2] << 13);
 
-		blockID++;
-
 		if (blockHeader.m_blockType == ZSTDHL_BLOCK_TYPE_INVALID)
 			return ZSTDHL_RESULT_BLOCK_TYPE_INVALID;
 
@@ -2185,8 +2178,6 @@ zstdhl_ResultCode_t zstdhl_EncodeFSEValue(zstdhl_FSEEncStack_t *stack, const zst
 	uint16_t stateMask = (1 << table->m_accuracyLog) - 1;
 	uint16_t nextState = 0;
 
-	CheckMem();
-
 	if (stack->m_statesStackVector.m_count == 0)
 	{
 		size_t i = 0;
@@ -2208,9 +2199,7 @@ zstdhl_ResultCode_t zstdhl_EncodeFSEValue(zstdhl_FSEEncStack_t *stack, const zst
 			return ZSTDHL_RESULT_FSE_TABLE_MISSING_SYMBOL;
 
 		state = (uint16_t)(bestCell - table->m_cells);
-		CheckMem();
 		ZSTDHL_CHECKED(zstdhl_Vector_Append(&stack->m_statesStackVector, &state, 1));
-		CheckMem();
 
 		return ZSTDHL_RESULT_OK;
 	}
@@ -2224,9 +2213,7 @@ zstdhl_ResultCode_t zstdhl_EncodeFSEValue(zstdhl_FSEEncStack_t *stack, const zst
 
 	nextState += (state - (state & stateMask));
 
-	CheckMem();
 	ZSTDHL_CHECKED(zstdhl_Vector_Append(&stack->m_statesStackVector, &nextState, 1));
-	CheckMem();
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -2436,9 +2423,7 @@ zstdhl_ResultCode_t zstdhl_Vector_Append(zstdhl_Vector_t *vec, const void *data,
 			newCapacityTarget *= 2u;
 		}
 
-		CheckMem();
 		newPtr = vec->m_alloc.m_reallocFunc(vec->m_alloc.m_userdata, vec->m_data, newCapacityTarget * vec->m_elementSize);
-		CheckMem();
 		if (!newPtr)
 			return ZSTDHL_RESULT_OUT_OF_MEMORY;
 
@@ -2452,20 +2437,14 @@ zstdhl_ResultCode_t zstdhl_Vector_Append(zstdhl_Vector_t *vec, const void *data,
 
 	destBytes = (uint8_t *)vec->m_dataEnd;
 
-	CheckMem();
 	if (data)
 	{
 		const uint8_t *srcBytes = (const uint8_t *)data;
 		bytesToCopy = count * vec->m_elementSize;
 
 		for (i = 0; i < bytesToCopy; i++)
-		{
-			CheckMem();
 			destBytes[i] = srcBytes[i];
-			CheckMem();
-		}
 	}
-	CheckMem();
 
 	vec->m_dataEnd = destBytes + bytesToCopy;
 	vec->m_count += count;
@@ -2494,6 +2473,7 @@ void zstdhl_Vector_Reset(zstdhl_Vector_t *vec)
 		vec->m_dataEnd = NULL;
 		vec->m_capacity = 0;
 	}
+	vec->m_count = 0;
 }
 
 void zstdhl_Vector_Destroy(zstdhl_Vector_t *vec)
