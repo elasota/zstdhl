@@ -733,6 +733,7 @@ int main(int argc, const char **argv)
 		gstd_EncoderState_t *encState;
 		zstdhl_EncoderOutputObject_t encOut;
 		GstdEncodeState_t encOutObject;
+		uint8_t maxOffsetCode = gstd_ComputeMaxOffsetExtraBits(128 * 1024);
 
 		memAllocObj.m_reallocFunc = Realloc;
 		memAllocObj.m_userdata = NULL;
@@ -742,7 +743,7 @@ int main(int argc, const char **argv)
 		encOut.m_writeBitstreamFunc = WriteBytes;
 		encOut.m_userdata = &encOutObject;
 
-		result = gstd_Encoder_Create(&encOut, 32, &memAllocObj, &encState);
+		result = gstd_Encoder_Create(&encOut, 32, maxOffsetCode , &memAllocObj, &encState);
 		if (result == ZSTDHL_RESULT_OK)
 		{
 			streamSourceObj.m_readBytesFunc = ReadBytes;

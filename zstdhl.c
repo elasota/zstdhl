@@ -920,6 +920,9 @@ zstdhl_ResultCode_t zstdhl_ParseFSEStream(zstdhl_ReverseBitstream_t *bitstream, 
 	uint8_t activeState = 0;
 	uint32_t numBytesRead = 0;
 
+	if (numStates != 1 && numStates != 2)
+		return ZSTDHL_RESULT_INTERNAL_ERROR;
+
 	while (activeState < numStates)
 	{
 		uint32_t state = 0;

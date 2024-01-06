@@ -6,34 +6,13 @@ typedef struct gstd_LaneState gstd_LaneState_t;
 
 #define GSTD_FLUSH_GRANULARITY		4
 #define GSTD_MAX_FLUSH_POSITIONS	2
+
 #define GSTD_SYNC_COMMAND_PEEK_FLAG		0x80
 #define GSTD_SYNC_COMMAND_PEEK_ALL_FLAG	0x40
 
-#define GSTD_CONTROL_DECOMPRESSED_SIZE_OFFSET	0
-#define GSTD_CONTROL_MORE_BLOCKS_BIT_OFFSET		22
-#define GSTD_CONTROL_AUX_BIT_OFFSET				23
-#define GSTD_CONTROL_LIT_SECTION_TYPE_OFFSET	24
-#define GSTD_CONTROL_LIT_LENGTH_MODE_OFFSET		26
-#define GSTD_CONTROL_OFFSET_MODE_OFFSET			28
-#define GSTD_CONTROL_MATCH_LENGTH_MODE_OFFSET	30
+#include "gstd_constants.h"
 
-#define GSTD_MAX_OFFSET_CODE					31
-#define GSTD_MAX_MATCH_LENGTH_CODE				52
-#define GSTD_MAX_LIT_LENGTH_CODE				35
-#define GSTD_MAX_HUFFMAN_WEIGHT					11
-#define GSTD_MAX_HUFFMAN_CODE_LENGTH			11
-
-#define GSTD_MAX_HUFFMAN_WEIGHT_ACCURACY_LOG	6
-#define GSTD_MAX_OFFSET_ACCURACY_LOG			8
-#define GSTD_MAX_MATCH_LENGTH_ACCURACY_LOG		9
-#define GSTD_MAX_LIT_LENGTH_ACCURACY_LOG		9
-
-#define GSTD_MAX_LIT_LENGTH_EXTRA_BITS			16
-#define GSTD_MAX_MATCH_LENGTH_EXTRA_BITS		16
-
-#define GSTD_MAX_ACCURACY_LOG					9
-
-#define GSTD_MAX_ZERO_PROB_REPEAT_COUNT			7
+#pragma optimize("",off)
 
 typedef struct gstd_InterleavedBitstream
 {
@@ -59,9 +38,11 @@ typedef struct gstd_EncoderState
 	size_t m_syncCommandReadOffset;
 
 	zstdhl_Vector_t m_pendingSequencesVector;
+	zstdhl_Vector_t m_allBitstreamsVector;
 
 	const zstdhl_EncoderOutputObject_t *m_output;
 	size_t m_numLanes;
+	uint8_t m_maxOffsetExtraBits;
 
 	gstd_InterleavedBitstream_t m_rawBytesBitstream;
 	gstd_InterleavedBitstream_t m_controlWordBitstream;
@@ -151,7 +132,7 @@ void gstd_LaneState_Destroy(gstd_LaneState_t *laneState)
 }
 
 
-zstdhl_ResultCode_t gstd_EncoderState_Init(gstd_EncoderState_t *encState, const zstdhl_EncoderOutputObject_t *output, size_t numLanes, const zstdhl_MemoryAllocatorObject_t *alloc)
+zstdhl_ResultCode_t gstd_EncoderState_Init(gstd_EncoderState_t *encState, const zstdhl_EncoderOutputObject_t *output, size_t numLanes, uint8_t maxOffsetExtraBits, const zstdhl_MemoryAllocatorObject_t *alloc)
 {
 	size_t i = 0;
 
@@ -161,9 +142,11 @@ zstdhl_ResultCode_t gstd_EncoderState_Init(gstd_EncoderState_t *encState, const 
 	zstdhl_Vector_Init(&encState->m_laneStateVector, sizeof(gstd_LaneState_t), alloc);
 	zstdhl_Vector_Init(&encState->m_pendingOutputVector, 1, alloc);
 	zstdhl_Vector_Init(&encState->m_pendingSequencesVector, sizeof(gstd_PendingSequence_t), alloc);
+	zstdhl_Vector_Init(&encState->m_allBitstreamsVector, sizeof(gstd_InterleavedBitstream_t*), alloc);
 
 	encState->m_output = output;
 	encState->m_numLanes = numLanes;
+	encState->m_maxOffsetExtraBits = GSTD_MAX_OFFSET_CODE;
 	encState->m_syncCommandReadOffset = 0;
 
 	ZSTDHL_CHECKED(zstdhl_Vector_Append(&encState->m_laneStateVector, NULL, numLanes));
@@ -174,6 +157,21 @@ zstdhl_ResultCode_t gstd_EncoderState_Init(gstd_EncoderState_t *encState, const 
 
 	gstd_InterleavedBitstream_Init(&encState->m_rawBytesBitstream);
 	gstd_InterleavedBitstream_Init(&encState->m_controlWordBitstream);
+
+	for (i = 0; i < numLanes; i++)
+	{
+		gstd_InterleavedBitstream_t *ptr = &encState->m_laneStates[i].m_interleavedBitstream;
+		ZSTDHL_CHECKED(zstdhl_Vector_Append(&encState->m_allBitstreamsVector, &ptr, 1));
+	}
+
+	{
+		gstd_InterleavedBitstream_t *moreBitstreamPtrs[] = { &encState->m_controlWordBitstream, &encState->m_rawBytesBitstream };
+
+		for (i = 0; i < sizeof(moreBitstreamPtrs) / sizeof(moreBitstreamPtrs[0]); i++)
+		{
+			ZSTDHL_CHECKED(zstdhl_Vector_Append(&encState->m_allBitstreamsVector, &moreBitstreamPtrs[i], 1));
+		}
+	}
 
 	encState->m_huffWeightTableDef.m_probabilities = encState->m_huffWeightProbs;
 	encState->m_huffWeightTableDef.m_numProbabilities = 0;
@@ -220,6 +218,7 @@ void gstd_EncoderState_Destroy(gstd_EncoderState_t *encState)
 	zstdhl_Vector_Destroy(&encState->m_laneStateVector);
 	zstdhl_Vector_Destroy(&encState->m_pendingOutputVector);
 	zstdhl_Vector_Destroy(&encState->m_pendingSequencesVector);
+	zstdhl_Vector_Destroy(&encState->m_allBitstreamsVector);
 }
 
 static zstdhl_ResultCode_t gstd_FlushBlocks(gstd_EncoderState_t *encState)
@@ -227,14 +226,14 @@ static zstdhl_ResultCode_t gstd_FlushBlocks(gstd_EncoderState_t *encState)
 	return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
 }
 
-zstdhl_ResultCode_t gstd_Encoder_Create(const zstdhl_EncoderOutputObject_t *output, size_t numLanes, const zstdhl_MemoryAllocatorObject_t *alloc, gstd_EncoderState_t **outEncState)
+zstdhl_ResultCode_t gstd_Encoder_Create(const zstdhl_EncoderOutputObject_t *output, size_t numLanes, uint8_t maxOffsetExtraBits, const zstdhl_MemoryAllocatorObject_t *alloc, gstd_EncoderState_t **outEncState)
 {
 	zstdhl_ResultCode_t resultCode = ZSTDHL_RESULT_OK;
 	gstd_EncoderState_t *encState = alloc->m_reallocFunc(alloc->m_userdata, NULL, sizeof(gstd_EncoderState_t));
 	if (!encState)
 		return ZSTDHL_RESULT_OUT_OF_MEMORY;
 
-	resultCode = gstd_EncoderState_Init(encState, output, numLanes, alloc);
+	resultCode = gstd_EncoderState_Init(encState, output, numLanes, maxOffsetExtraBits, alloc);
 	if (resultCode != ZSTDHL_RESULT_OK)
 	{
 		gstd_EncoderState_Destroy(encState);
@@ -760,6 +759,8 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 {
 	size_t sliceBase = 0;
 	size_t laneIndex = 0;
+	uint32_t decompressedSize = 0;
+	uint32_t maxDecompressedSize = 0xffffffffu;
 	const gstd_PendingSequence_t *allSequences = (const gstd_PendingSequence_t *)enc->m_pendingSequencesVector.m_data;
 
 	ZSTDHL_CHECKED(gstd_Encoder_EncodePackedSize(enc, block->m_seqSectionDesc.m_numSequences));
@@ -769,6 +770,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 		const gstd_PendingSequence_t *laneSequences = allSequences + sliceBase;
 		size_t broadcastSize = enc->m_pendingSequencesVector.m_count - sliceBase;
 		uint8_t fseStatesRefillSize = GSTD_MAX_OFFSET_ACCURACY_LOG + GSTD_MAX_LIT_LENGTH_ACCURACY_LOG + GSTD_MAX_MATCH_LENGTH_ACCURACY_LOG;
+		uint8_t maxOffsetExtraBits = GSTD_MAX_OFFSET_CODE;	// enc->m_maxOffsetExtraBits
 
 		if (broadcastSize > enc->m_numLanes)
 			broadcastSize = enc->m_numLanes;
@@ -781,6 +783,16 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 			ZSTDHL_CHECKED(zstdhl_EncodeLitLength(seq->m_litLength, &laneState->m_pendingLitLength.m_value, &laneState->m_pendingLitLength.m_extra, &laneState->m_pendingLitLength.m_extraNumBits));
 			ZSTDHL_CHECKED(zstdhl_EncodeMatchLength(seq->m_matchLength, &laneState->m_pendingMatchLength.m_value, &laneState->m_pendingMatchLength.m_extra, &laneState->m_pendingMatchLength.m_extraNumBits));
 			ZSTDHL_CHECKED(zstdhl_EncodeOffsetCode(seq->m_offsetCode, &laneState->m_pendingOffset.m_value, &laneState->m_pendingOffset.m_extra, &laneState->m_pendingOffset.m_extraNumBits));
+
+			if (maxDecompressedSize - decompressedSize < seq->m_litLength)
+				return ZSTDHL_RESULT_INTEGER_OVERFLOW;
+
+			decompressedSize += seq->m_litLength;
+
+			if (maxDecompressedSize - decompressedSize < seq->m_matchLength)
+				return ZSTDHL_RESULT_INTEGER_OVERFLOW;
+
+			decompressedSize += seq->m_matchLength;
 		}
 
 		ZSTDHL_CHECKED(gstd_Encoder_SyncBroadcastPeek(enc, fseStatesRefillSize, broadcastSize));
@@ -818,14 +830,20 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 			ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &laneState->m_interleavedBitstream, laneState->m_pendingMatchLength.m_extra, laneState->m_pendingMatchLength.m_extraNumBits));
 		}
 
-		ZSTDHL_CHECKED(gstd_Encoder_SyncBroadcastPeek(enc, GSTD_MAX_OFFSET_CODE, broadcastSize));
+		ZSTDHL_CHECKED(gstd_Encoder_SyncBroadcastPeek(enc, maxOffsetExtraBits, broadcastSize));
 
 		for (laneIndex = 0; laneIndex < broadcastSize; laneIndex++)
 		{
 			gstd_LaneState_t *laneState = enc->m_laneStates + laneIndex;
+
+			if (laneState->m_pendingOffset.m_extraNumBits > maxOffsetExtraBits)
+				return ZSTDHL_RESULT_OFFSET_TOO_LARGE;
+
 			ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &laneState->m_interleavedBitstream, laneState->m_pendingOffset.m_extra, laneState->m_pendingOffset.m_extraNumBits));
 		}
 	}
+
+	*outDecompressedSize = decompressedSize;
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -1067,6 +1085,7 @@ zstdhl_ResultCode_t gstd_Encoder_AddBlock(gstd_EncoderState_t *enc, const zstdhl
 
 	controlWord |= (decompressedSize << GSTD_CONTROL_DECOMPRESSED_SIZE_OFFSET);
 	controlWord |= (auxBit << GSTD_CONTROL_AUX_BIT_OFFSET);
+	controlWord |= (block->m_blockHeader.m_blockType << GSTD_CONTROL_BLOCK_TYPE_OFFSET);
 
 	ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_controlWordBitstream, controlWord, 32));
 
@@ -1115,6 +1134,23 @@ void gstd_Encoder_Destroy(gstd_EncoderState_t *enc)
 {
 	gstd_EncoderState_Destroy(enc);
 	enc->m_alloc.m_reallocFunc(enc->m_alloc.m_userdata, enc, 0);
+}
+
+uint8_t gstd_ComputeMaxOffsetExtraBits(uint32_t maxFrameSize)
+{
+	uint32_t maxOffsetValue = 0;
+	uint32_t maxOffsetCode = 0;
+	int highBitPos = 0;
+
+	if (maxFrameSize <= 1)
+		return 0;
+
+	maxOffsetValue = maxFrameSize - 1;
+
+	if (maxOffsetValue > 0xfffffffcu)
+		maxOffsetValue = 0xfffffffcu;
+
+	return (uint8_t)zstdhl_Log2_32(maxOffsetValue + 3);
 }
 
 typedef enum gstd_TranscodeFSETablePurpose
