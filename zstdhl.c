@@ -411,6 +411,9 @@ static zstdhl_ResultCode_t zstdhl_ReverseBitstream_PeekBits(zstdhl_ReverseBitstr
 
 static zstdhl_ResultCode_t zstdhl_ReverseBitstream_ConsumeBits(zstdhl_ReverseBitstream_t *bitstream, uint8_t numBitsToRead)
 {
+	if (numBitsToRead == 0)
+		return ZSTDHL_RESULT_OK;
+
 	if (bitstream->m_numBits < numBitsToRead)
 		return ZSTDHL_RESULT_REVERSE_BITSTREAM_TRUNCATED;
 
@@ -1827,7 +1830,7 @@ zstdhl_ResultCode_t zstdhl_DecodeSequences(zstdhl_ReverseBitstream_t *bitstream,
 	zstdhl_Buffers_Dealloc(buffers, ZSTDHL_BUFFER_MATCH_LENGTH_FSE_TABLE);
 
 	if (bitstream->m_numBits > 0 || bitstream->m_bytesAvailable > 0)
-		return ZSTDHL_RESULT_HUFFMAN_STREAM_INCOMPLETELY_CONSUMED;
+		return ZSTDHL_RESULT_SEQUENCE_BITSTREAM_INCOMPLETELY_CONSUMED;
 
 	return ZSTDHL_RESULT_OK;
 }
