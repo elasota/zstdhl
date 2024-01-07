@@ -2436,7 +2436,7 @@ zstdhl_ResultCode_t zstdhl_Vector_Append(zstdhl_Vector_t *vec, const void *data,
 		vec->m_data = newPtr;
 		vec->m_dataEnd = ((uint8_t *)newPtr) + vec->m_elementSize * vec->m_count;
 		vec->m_capacity = newCapacityTarget;
-		vec->m_size = newCapacityTarget * vec->m_elementSize;
+		vec->m_capacityBytes = newCapacityTarget * vec->m_elementSize;
 
 		wasResized = 1;
 	}

@@ -84,6 +84,7 @@ typedef enum zstdhl_ResultCode
 	ZSTDHL_RESULT_FRAME_HEADER_RESERVED_BIT_WAS_SET,
 	ZSTDHL_RESULT_BLOCK_HEADER_TRUNCATED,
 	ZSTDHL_RESULT_BLOCK_TYPE_INVALID,
+	ZSTDHL_RESULT_BLOCK_SIZE_INVALID,
 	ZSTDHL_RESULT_BLOCK_TRUNCATED,
 	ZSTDHL_RESULT_LITERALS_SECTION_HEADER_TRUNCATED,
 	ZSTDHL_RESULT_HUFFMAN_TREE_DESC_TRUNCATED,
@@ -379,7 +380,7 @@ typedef struct zstdhl_Vector
 	size_t m_capacity;
 	size_t m_elementSize;
 	size_t m_maxCapacity;
-	size_t m_size;
+	size_t m_capacityBytes;
 } zstdhl_Vector_t;
 
 typedef struct zstdhl_FSEEncStack
@@ -430,6 +431,8 @@ typedef struct zstdhl_EncBlockDesc
 	uint8_t m_autoBlockSizeFlag;
 	uint8_t m_autoLitSizeFlag;
 	uint8_t m_autoHuffmanStreamSizesFlags[4];
+
+	const void *m_uncompressedOrRLEData;
 } zstdhl_EncBlockDesc_t;
 
 typedef struct zstdhl_EncoderOutputObject

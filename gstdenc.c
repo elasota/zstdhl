@@ -539,15 +539,16 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanTree(gstd_EncoderState_t *enc, con
 	
 	*outAuxBit = 0;
 
-	ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 16));
+	ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 32));
 
 	if (huffmanTreeDesc->m_huffmanWeightFormat == ZSTDHL_HUFFMAN_WEIGHT_ENCODING_UNCOMPRESSED)
 	{
+		int i = 0;
+
 		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, 0, 8));
 		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, numSpecifiedWeights, 8));
 
-		int i = 0;
-		for (i = 0; i < numSpecifiedWeights; i += 2)
+		for (i = 0; i < numSpecifiedWeights; i++)
 		{
 			if ((i & 1) == 0)
 				ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
@@ -555,8 +556,10 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanTree(gstd_EncoderState_t *enc, con
 			ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, huffmanTreeDesc->m_partialWeightDesc.m_specifiedWeights[i], 4));
 		}
 
-		if ((numSpecifiedWeights & 1) != 0)
+		if ((numSpecifiedWeights & 1) == 1)
+		{
 			ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, 0, 4));
+		}
 	}
 	else
 	{
@@ -1040,6 +1043,38 @@ zstdhl_ResultCode_t gstd_Encoder_ResolveInitialFSEStates(gstd_EncoderState_t *en
 	return ZSTDHL_RESULT_OK;
 }
 
+zstdhl_ResultCode_t gstd_Encoder_EncodeRawBlock(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block, uint32_t *outDecompressedSize, uint8_t *outExtraByte)
+{
+	if (block->m_blockHeader.m_blockSize == 0)
+		return ZSTDHL_RESULT_BLOCK_SIZE_INVALID;
+
+	*outDecompressedSize = block->m_blockHeader.m_blockSize;
+	*outExtraByte = *((const uint8_t *) block->m_uncompressedOrRLEData);
+	return ZSTDHL_RESULT_OK;
+}
+
+zstdhl_ResultCode_t gstd_Encoder_EncodeRLEBlock(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block, uint32_t *outDecompressedSize, uint8_t *outExtraByte)
+{
+	uint32_t sizeRemaining = 0;
+	const uint8_t *blockBytes = (const uint8_t *) block->m_uncompressedOrRLEData;
+	uint32_t i = 0;
+
+	if (block->m_blockHeader.m_blockSize < 1)
+		return ZSTDHL_RESULT_BLOCK_SIZE_INVALID;
+
+	*outDecompressedSize = block->m_blockHeader.m_blockSize;
+
+	*outExtraByte = blockBytes[0];
+
+	for (i = 1; i < block->m_blockHeader.m_blockSize; i++)
+	{
+		ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
+		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, blockBytes[i], 8));
+	}
+
+	return ZSTDHL_RESULT_OK;
+}
+
 zstdhl_ResultCode_t gstd_Encoder_EncodeCompressedBlock(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block, uint32_t *outDecompressedSize, uint32_t *outAuxBit)
 {
 	ZSTDHL_CHECKED(gstd_Encoder_QueueAllSequences(enc, block));
@@ -1060,19 +1095,25 @@ zstdhl_ResultCode_t gstd_Encoder_AddBlock(gstd_EncoderState_t *enc, const zstdhl
 	uint32_t decompressedSize = 0;
 	uint32_t auxBit = 0;
 
+	uint8_t extraByte = 0;
+
 	ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_controlWordBitstream, 32));
 
 	switch (block->m_blockHeader.m_blockType)
 	{
 	case ZSTDHL_BLOCK_TYPE_RAW:
-		return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
+		ZSTDHL_CHECKED(gstd_Encoder_EncodeRawBlock(enc, block, &decompressedSize, &extraByte));
+		controlWord |= (extraByte << GSTD_CONTROL_RAW_FIRST_BYTE_OFFSET);
+		break;
 	case ZSTDHL_BLOCK_TYPE_RLE:
-		return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
+		ZSTDHL_CHECKED(gstd_Encoder_EncodeRLEBlock(enc, block, &decompressedSize, &extraByte));
+		controlWord |= (extraByte << GSTD_CONTROL_RAW_FIRST_BYTE_OFFSET);
+		break;
 	case ZSTDHL_BLOCK_TYPE_COMPRESSED:
 		controlWord |= (block->m_litSectionHeader.m_sectionType << GSTD_CONTROL_LIT_SECTION_TYPE_OFFSET);
 		controlWord |= (block->m_seqSectionDesc.m_literalLengthsMode << GSTD_CONTROL_LIT_LENGTH_MODE_OFFSET);
 		controlWord |= (block->m_seqSectionDesc.m_offsetsMode << GSTD_CONTROL_OFFSET_MODE_OFFSET);
-		controlWord |= (block->m_seqSectionDesc.m_offsetsMode << GSTD_CONTROL_MATCH_LENGTH_MODE_OFFSET);
+		controlWord |= (block->m_seqSectionDesc.m_matchLengthsMode << GSTD_CONTROL_MATCH_LENGTH_MODE_OFFSET);
 		ZSTDHL_CHECKED(gstd_Encoder_EncodeCompressedBlock(enc, block, &decompressedSize, &auxBit));
 		break;
 
@@ -1276,6 +1317,11 @@ typedef struct gstd_TranscodeState
 	zstdhl_FSETableDef_t m_matchLengthTable;
 
 	gstd_EncoderState_t *m_enc;
+
+	zstdhl_Vector_t m_uncompressedDataVector;
+
+	uint8_t m_rleByte;
+	uint32_t m_rleSize;
 } gstd_TranscodeState_t;
 
 zstdhl_ResultCode_t gstd_TranscodeState_Init(gstd_TranscodeState_t *state, gstd_EncoderState_t *enc, const zstdhl_MemoryAllocatorObject_t *alloc)
@@ -1283,6 +1329,8 @@ zstdhl_ResultCode_t gstd_TranscodeState_Init(gstd_TranscodeState_t *state, gstd_
 	state->m_alloc.m_reallocFunc = alloc->m_reallocFunc;
 	state->m_alloc.m_userdata = alloc->m_userdata;
 	state->m_enc = enc;
+	state->m_rleByte = 0;
+	state->m_rleSize = 0;
 
 	zstdhl_Vector_Init(&state->m_literalsVector, 1, alloc);
 	zstdhl_Vector_Init(&state->m_seqVector, sizeof(gstd_Sequence_t), alloc);
@@ -1290,6 +1338,7 @@ zstdhl_ResultCode_t gstd_TranscodeState_Init(gstd_TranscodeState_t *state, gstd_
 	zstdhl_Vector_Init(&state->m_litLengthProbsVector, sizeof(uint32_t), alloc);
 	zstdhl_Vector_Init(&state->m_offsetProbsVector, sizeof(uint32_t), alloc);
 	zstdhl_Vector_Init(&state->m_matchLengthProbsVector, sizeof(uint32_t), alloc);
+	zstdhl_Vector_Init(&state->m_uncompressedDataVector, 1, alloc);
 
 	gstd_VectorByteReader_Init(&state->m_literalsReader, &state->m_literalsVector);
 
@@ -1339,6 +1388,8 @@ zstdhl_ResultCode_t gstd_TranscodeState_Init(gstd_TranscodeState_t *state, gstd_
 	state->m_encBlock.m_matchLengthsCompressionDesc.m_fseProbs = &state->m_matchLengthTable;
 	state->m_encBlock.m_offsetsModeCompressionDesc.m_rleByte = 0;
 
+	state->m_encBlock.m_uncompressedOrRLEData = NULL;
+
 	return ZSTDHL_RESULT_OK;
 }
 
@@ -1350,6 +1401,7 @@ void gstd_TranscodeState_Destroy(gstd_TranscodeState_t *state)
 	zstdhl_Vector_Destroy(&state->m_litLengthProbsVector);
 	zstdhl_Vector_Destroy(&state->m_offsetProbsVector);
 	zstdhl_Vector_Destroy(&state->m_matchLengthProbsVector);
+	zstdhl_Vector_Destroy(&state->m_uncompressedDataVector);
 }
 
 static gstd_TranscodeFSETablePurpose_t gstd_SelectNextFSETablePurpose(const gstd_TranscodeState_t *state, gstd_TranscodeFSETablePurpose_t prevPurpose)
@@ -1458,12 +1510,20 @@ zstdhl_ResultCode_t gstd_TranscodeSequencesSection(gstd_TranscodeState_t *state,
 
 zstdhl_ResultCode_t gstd_TranscodeBlockRLEData(gstd_TranscodeState_t *state, const zstdhl_BlockRLEDesc_t *rleDesc)
 {
-	return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
+	if (rleDesc->m_count > 0xffffffffu)
+		return ZSTDHL_RESULT_INTEGER_OVERFLOW;
+
+	state->m_rleByte = rleDesc->m_value;
+	state->m_rleSize = (uint32_t) rleDesc->m_count;
+
+	return ZSTDHL_RESULT_OK;
 }
 
 zstdhl_ResultCode_t gstd_TranscodeBlockUncompressedData(gstd_TranscodeState_t *state, const zstdhl_BlockUncompressedDesc_t *uncompressedDesc)
 {
-	return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
+	ZSTDHL_CHECKED(zstdhl_Vector_Append(&state->m_uncompressedDataVector, uncompressedDesc->m_data, uncompressedDesc->m_size));
+
+	return ZSTDHL_RESULT_OK;
 }
 
 zstdhl_ResultCode_t gstd_TranscodeFSETableStart(gstd_TranscodeState_t *state, const zstdhl_FSETableStartDesc_t *tableStartDesc)
@@ -1621,11 +1681,28 @@ zstdhl_ResultCode_t gstd_TranscodeSequence(gstd_TranscodeState_t *state, const z
 
 zstdhl_ResultCode_t gstd_TranscodeBlockEnd(gstd_TranscodeState_t *state)
 {
+	if (state->m_encBlock.m_blockHeader.m_blockType == ZSTDHL_BLOCK_TYPE_RAW)
+	{
+		if (state->m_uncompressedDataVector.m_count > 0xffffffffu)
+			return ZSTDHL_RESULT_INTEGER_OVERFLOW;
+
+		state->m_encBlock.m_uncompressedOrRLEData = state->m_uncompressedDataVector.m_data;
+		state->m_encBlock.m_blockHeader.m_blockSize = (uint32_t) state->m_uncompressedDataVector.m_count;
+	}
+	else if (state->m_encBlock.m_blockHeader.m_blockType == ZSTDHL_BLOCK_TYPE_RLE)
+	{
+		state->m_encBlock.m_uncompressedOrRLEData = &state->m_rleByte;
+		state->m_encBlock.m_blockHeader.m_blockSize = state->m_rleSize;
+	}
+
 	ZSTDHL_CHECKED(gstd_Encoder_AddBlock(state->m_enc, &state->m_encBlock));
 
 	zstdhl_Vector_Clear(&state->m_literalsVector);
 	zstdhl_Vector_Clear(&state->m_seqVector);
 	zstdhl_Vector_Clear(&state->m_seqOffsetsVector);
+	zstdhl_Vector_Clear(&state->m_uncompressedDataVector);
+
+	state->m_encBlock.m_blockHeader.m_blockSize = 0;
 
 	return ZSTDHL_RESULT_OK;
 }
