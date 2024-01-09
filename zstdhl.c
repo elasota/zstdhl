@@ -126,7 +126,7 @@ void zstdhl_ReportErrorCode(zstdhl_ResultCode_t errorCode)
 	}
 }
 
-zstdhl_ResultCode_t zstdhl_ReadChecked(const zstdhl_StreamSourceObject_t * streamSource, void *dest, size_t numBytes, zstdhl_ResultCode_t failureResult)
+zstdhl_ResultCode_t zstdhl_ReadChecked(const zstdhl_StreamSourceObject_t *streamSource, void *dest, size_t numBytes, zstdhl_ResultCode_t failureResult)
 {
 	if (streamSource->m_readBytesFunc(streamSource->m_userdata, dest, numBytes) != numBytes)
 		return failureResult;

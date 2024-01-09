@@ -20,8 +20,6 @@ typedef struct gstd_LaneState gstd_LaneState_t;
 
 #include "gstd_constants.h"
 
-#pragma optimize("",off)
-
 typedef struct gstd_InterleavedBitstream
 {
 	uint8_t m_bits[GSTD_FLUSH_GRANULARITY];
@@ -37,6 +35,11 @@ typedef struct gstd_PendingSequence
 	uint32_t m_offsetCode;
 } gstd_PendingSequence_t;
 
+enum gstd_Tweak
+{
+	GSTD_TWEAK_SEPARATE_LITERALS	= (1 << 0),
+};
+
 typedef struct gstd_EncoderState
 {
 	zstdhl_MemoryAllocatorObject_t m_alloc;
@@ -47,6 +50,8 @@ typedef struct gstd_EncoderState
 
 	zstdhl_Vector_t m_pendingSequencesVector;
 	zstdhl_Vector_t m_allBitstreamsVector;
+
+	zstdhl_Vector_t m_pendingLiteralsVector;
 
 	const zstdhl_EncoderOutputObject_t *m_output;
 	size_t m_numLanes;
@@ -92,6 +97,10 @@ typedef struct gstd_EncoderState
 	zstdhl_SequencesCompressionMode_t m_litLengthMode;
 
 	zstdhl_HuffmanTableEnc_t m_huffmanEnc;
+
+	uint32_t m_numLiteralsWritten;
+
+	uint32_t m_tweaks;
 } gstd_EncoderState_t;
 
 void gstd_InterleavedBitstream_Init(gstd_InterleavedBitstream_t *bitstream)
@@ -140,7 +149,7 @@ void gstd_LaneState_Destroy(gstd_LaneState_t *laneState)
 }
 
 
-zstdhl_ResultCode_t gstd_EncoderState_Init(gstd_EncoderState_t *encState, const zstdhl_EncoderOutputObject_t *output, size_t numLanes, uint8_t maxOffsetExtraBits, const zstdhl_MemoryAllocatorObject_t *alloc)
+zstdhl_ResultCode_t gstd_EncoderState_Init(gstd_EncoderState_t *encState, const zstdhl_EncoderOutputObject_t *output, size_t numLanes, uint8_t maxOffsetExtraBits, uint32_t tweakFlags, const zstdhl_MemoryAllocatorObject_t *alloc)
 {
 	size_t i = 0;
 
@@ -151,11 +160,13 @@ zstdhl_ResultCode_t gstd_EncoderState_Init(gstd_EncoderState_t *encState, const 
 	zstdhl_Vector_Init(&encState->m_pendingOutputVector, 1, alloc);
 	zstdhl_Vector_Init(&encState->m_pendingSequencesVector, sizeof(gstd_PendingSequence_t), alloc);
 	zstdhl_Vector_Init(&encState->m_allBitstreamsVector, sizeof(gstd_InterleavedBitstream_t*), alloc);
+	zstdhl_Vector_Init(&encState->m_pendingLiteralsVector, 1, alloc);
 
 	encState->m_output = output;
 	encState->m_numLanes = numLanes;
 	encState->m_maxOffsetExtraBits = GSTD_MAX_OFFSET_CODE;
 	encState->m_syncCommandReadOffset = 0;
+	encState->m_tweaks = tweakFlags;
 
 	ZSTDHL_CHECKED(zstdhl_Vector_Append(&encState->m_laneStateVector, NULL, numLanes));
 
@@ -227,21 +238,17 @@ void gstd_EncoderState_Destroy(gstd_EncoderState_t *encState)
 	zstdhl_Vector_Destroy(&encState->m_pendingOutputVector);
 	zstdhl_Vector_Destroy(&encState->m_pendingSequencesVector);
 	zstdhl_Vector_Destroy(&encState->m_allBitstreamsVector);
+	zstdhl_Vector_Destroy(&encState->m_pendingLiteralsVector);
 }
 
-static zstdhl_ResultCode_t gstd_FlushBlocks(gstd_EncoderState_t *encState)
-{
-	return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
-}
-
-zstdhl_ResultCode_t gstd_Encoder_Create(const zstdhl_EncoderOutputObject_t *output, size_t numLanes, uint8_t maxOffsetExtraBits, const zstdhl_MemoryAllocatorObject_t *alloc, gstd_EncoderState_t **outEncState)
+zstdhl_ResultCode_t gstd_Encoder_Create(const zstdhl_EncoderOutputObject_t *output, size_t numLanes, uint8_t maxOffsetExtraBits, uint32_t tweaks, const zstdhl_MemoryAllocatorObject_t *alloc, gstd_EncoderState_t **outEncState)
 {
 	zstdhl_ResultCode_t resultCode = ZSTDHL_RESULT_OK;
 	gstd_EncoderState_t *encState = alloc->m_reallocFunc(alloc->m_userdata, NULL, sizeof(gstd_EncoderState_t));
 	if (!encState)
 		return ZSTDHL_RESULT_OUT_OF_MEMORY;
 
-	resultCode = gstd_EncoderState_Init(encState, output, numLanes, maxOffsetExtraBits, alloc);
+	resultCode = gstd_EncoderState_Init(encState, output, numLanes, maxOffsetExtraBits, tweaks, alloc);
 	if (resultCode != ZSTDHL_RESULT_OK)
 	{
 		gstd_EncoderState_Destroy(encState);
@@ -305,6 +312,9 @@ zstdhl_ResultCode_t gstd_Encoder_PutBits(gstd_EncoderState_t *enc, gstd_Interlea
 	{
 		uint8_t partialBits = (bitstream->m_numBits & 7);
 		uint8_t byteOffset = (bitstream->m_numBits / 8);
+
+		if (bitstream->m_numFlushPositions == 0)
+			return ZSTDHL_RESULT_INTERNAL_ERROR;
 
 		if (byteOffset >= GSTD_FLUSH_GRANULARITY)
 			return ZSTDHL_RESULT_INTERNAL_ERROR;
@@ -663,11 +673,32 @@ zstdhl_ResultCode_t gstd_GenerateHuffmanEncodeTable(const zstdhl_HuffmanTreeDesc
 	return ZSTDHL_RESULT_OK;
 }
 
+static zstdhl_ResultCode_t gstd_Encoder_QueuePendingLiterals(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block)
+{
+	uint8_t buffer[1024];
+	uint32_t remainingSize = block->m_litSectionHeader.m_regeneratedSize;
+	const zstdhl_StreamSourceObject_t *streamObj = block->m_litSectionDesc.m_decompressedLiteralsStream;
+
+	while (remainingSize > 0)
+	{
+		uint32_t chunkSize = sizeof(buffer);
+		if (chunkSize > remainingSize)
+			chunkSize = remainingSize;
+
+		remainingSize -= chunkSize;
+
+		ZSTDHL_CHECKED(zstdhl_ReadChecked(streamObj, buffer, chunkSize, ZSTDHL_RESULT_INPUT_FAILED));
+
+		ZSTDHL_CHECKED(zstdhl_Vector_Append(&enc->m_pendingLiteralsVector, buffer, chunkSize));
+	}
+
+	return ZSTDHL_RESULT_OK;
+}
+
 zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanLiterals(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block, int haveNewTree, uint32_t *outAuxBit)
 {
 	size_t i = 0;
 	size_t numLanes = enc->m_numLanes;
-	const zstdhl_StreamSourceObject_t *streamObj = block->m_litSectionDesc.m_decompressedLiteralsStream;
 
 	if (haveNewTree)
 	{
@@ -678,26 +709,35 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanLiterals(gstd_EncoderState_t *enc,
 	else
 		*outAuxBit = 0;
 
-	for (i = 0; i < block->m_litSectionHeader.m_regeneratedSize; i++)
+	if (enc->m_tweaks & GSTD_TWEAK_SEPARATE_LITERALS)
 	{
-		size_t laneIndex = i % numLanes;
-		uint8_t lit = 0;
-		const zstdhl_HuffmanTableEncEntry_t *tableEntry = NULL;
+		const zstdhl_StreamSourceObject_t *streamObj = block->m_litSectionDesc.m_decompressedLiteralsStream;
 
-		ZSTDHL_CHECKED(zstdhl_ReadChecked(streamObj, &lit, 1, ZSTDHL_RESULT_INPUT_FAILED));
-
-		tableEntry = enc->m_huffmanEnc.m_entries + lit;
-
-		if (laneIndex == 0)
+		for (i = 0; i < block->m_litSectionHeader.m_regeneratedSize; i++)
 		{
-			size_t broadcastSize = block->m_litSectionHeader.m_regeneratedSize - i;
-			if (broadcastSize > numLanes)
-				broadcastSize = numLanes;
+			size_t laneIndex = i % numLanes;
+			uint8_t lit = 0;
+			const zstdhl_HuffmanTableEncEntry_t *tableEntry = NULL;
 
-			ZSTDHL_CHECKED(gstd_Encoder_SyncBroadcastPeek(enc, GSTD_MAX_HUFFMAN_CODE_LENGTH, broadcastSize));
+			ZSTDHL_CHECKED(zstdhl_ReadChecked(streamObj, &lit, 1, ZSTDHL_RESULT_INPUT_FAILED));
+
+			tableEntry = enc->m_huffmanEnc.m_entries + lit;
+
+			if (laneIndex == 0)
+			{
+				size_t broadcastSize = block->m_litSectionHeader.m_regeneratedSize - i;
+				if (broadcastSize > numLanes)
+					broadcastSize = numLanes;
+
+				ZSTDHL_CHECKED(gstd_Encoder_SyncBroadcastPeek(enc, GSTD_MAX_HUFFMAN_CODE_LENGTH, broadcastSize));
+			}
+
+			ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_laneStates[laneIndex].m_interleavedBitstream, tableEntry->m_bits, tableEntry->m_numBits));
 		}
-
-		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_laneStates[laneIndex].m_interleavedBitstream, tableEntry->m_bits, tableEntry->m_numBits));
+	}
+	else
+	{
+		ZSTDHL_CHECKED(gstd_Encoder_QueuePendingLiterals(enc, block));
 	}
 
 	return ZSTDHL_RESULT_OK;
@@ -705,17 +745,37 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanLiterals(gstd_EncoderState_t *enc,
 
 zstdhl_ResultCode_t gstd_Encoder_EncodeRawLiterals(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block)
 {
+	if (enc->m_tweaks & GSTD_TWEAK_SEPARATE_LITERALS)
+	{
+		uint8_t b = 0;
+		size_t i = 0;
+		const zstdhl_StreamSourceObject_t *streamObj = block->m_litSectionDesc.m_decompressedLiteralsStream;
+
+		for (i = 0; i < block->m_litSectionDesc.m_numValues; i++)
+		{
+			ZSTDHL_CHECKED(zstdhl_ReadChecked(streamObj, &b, 1, ZSTDHL_RESULT_INPUT_FAILED));
+
+			ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
+			ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, b, 8));
+		}
+	}
+	else
+	{
+		ZSTDHL_CHECKED(gstd_Encoder_QueuePendingLiterals(enc, block));
+	}
+
+	return ZSTDHL_RESULT_OK;
+}
+
+zstdhl_ResultCode_t gstd_Encoder_EncodeRLELiterals(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block)
+{
 	uint8_t b = 0;
-	size_t i = 0;
 	const zstdhl_StreamSourceObject_t *streamObj = block->m_litSectionDesc.m_decompressedLiteralsStream;
 
-	for (i = 0; i < block->m_litSectionDesc.m_numValues; i++)
-	{
-		ZSTDHL_CHECKED(zstdhl_ReadChecked(streamObj, &b, 1, ZSTDHL_RESULT_INPUT_FAILED));
+	ZSTDHL_CHECKED(zstdhl_ReadChecked(streamObj, &b, 1, ZSTDHL_RESULT_INPUT_FAILED));
 
-		ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
-		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, b, 8));
-	}
+	ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
+	ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, b, 8));
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -749,6 +809,9 @@ zstdhl_ResultCode_t gstd_Encoder_EncodePackedSize(gstd_EncoderState_t *enc, uint
 
 zstdhl_ResultCode_t gstd_Encoder_EncodeLiteralsSection(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block, uint32_t *outAuxBit)
 {
+	zstdhl_Vector_Clear(&enc->m_pendingLiteralsVector);
+	enc->m_numLiteralsWritten = 0;
+
 	ZSTDHL_CHECKED(gstd_Encoder_EncodePackedSize(enc, block->m_litSectionHeader.m_regeneratedSize));
 
 	switch (block->m_litSectionHeader.m_sectionType)
@@ -758,12 +821,107 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeLiteralsSection(gstd_EncoderState_t *enc,
 	case ZSTDHL_LITERALS_SECTION_TYPE_HUFFMAN_REUSE:
 		return gstd_Encoder_EncodeHuffmanLiterals(enc, block, 0, outAuxBit);
 	case ZSTDHL_LITERALS_SECTION_TYPE_RLE:
+		return gstd_Encoder_EncodeRawLiterals(enc, block);
 	case ZSTDHL_LITERALS_SECTION_TYPE_RAW:
-		// These work identically
 		return gstd_Encoder_EncodeRawLiterals(enc, block);
 	default:
 		return ZSTDHL_RESULT_INTERNAL_ERROR;
 	}
+}
+
+static zstdhl_ResultCode_t gstd_Encoder_WriteLiteralRefills(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block, size_t numLiteralsToRefill)
+{
+	size_t numLanesToRefill = (numLiteralsToRefill + 3u) / 4u;
+	size_t i = 0;
+	const uint8_t *literals = ((const uint8_t *)enc->m_pendingLiteralsVector.m_data) + enc->m_numLiteralsWritten;
+		
+	if (block->m_litSectionHeader.m_sectionType == ZSTDHL_LITERALS_SECTION_TYPE_RAW)
+	{
+		for (i = 0; i < numLanesToRefill; i++)
+		{
+			gstd_InterleavedBitstream_t *bitstream = &enc->m_laneStates[i].m_interleavedBitstream;
+			ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, bitstream, 32));
+		}
+
+		for (i = 0; i < numLiteralsToRefill; i++)
+		{
+			gstd_InterleavedBitstream_t *bitstream = &enc->m_laneStates[i / 4u].m_interleavedBitstream;
+			ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, bitstream, literals[i], 8));
+		}
+
+		return ZSTDHL_RESULT_OK;
+	}
+	else if (block->m_litSectionHeader.m_sectionType == ZSTDHL_LITERALS_SECTION_TYPE_HUFFMAN || block->m_litSectionHeader.m_sectionType == ZSTDHL_LITERALS_SECTION_TYPE_HUFFMAN_REUSE)
+	{
+		size_t round = 0;
+
+		for (round = 0; round < 4; round++)
+		{
+			for (i = 0; i < numLanesToRefill; i++)
+			{
+				size_t litIndex = i * 4u + round;
+				gstd_InterleavedBitstream_t *bitstream = &enc->m_laneStates[i].m_interleavedBitstream;
+				const zstdhl_HuffmanTableEncEntry_t *tableEntry = NULL;
+
+				if (litIndex >= numLiteralsToRefill)
+					continue;
+
+				if (round == 0 || round == 2)
+				{
+					ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, bitstream, GSTD_MAX_HUFFMAN_CODE_LENGTH * 2u));
+				}
+
+				tableEntry = enc->m_huffmanEnc.m_entries + literals[litIndex];
+				ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, bitstream, tableEntry->m_bits, tableEntry->m_numBits));
+			}
+		}
+
+		return ZSTDHL_RESULT_OK;
+	}
+	else
+		return ZSTDHL_RESULT_INTERNAL_ERROR;
+}
+
+zstdhl_ResultCode_t gstd_Encoder_PutLiteralPacket(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block, uint32_t numLiterals)
+{
+	uint32_t literalsRemaining = numLiterals;
+
+	while (literalsRemaining > 0)
+	{
+		size_t maxBufferedLiterals = enc->m_numLanes * 4u;
+		size_t literalsBuffered = maxBufferedLiterals - (enc->m_numLiteralsWritten % maxBufferedLiterals);
+		size_t remainingLiteralsAvailableToWrite = (enc->m_pendingLiteralsVector.m_count - enc->m_numLiteralsWritten);
+		size_t numLiteralsToFlush = 0;
+
+		if (literalsBuffered == maxBufferedLiterals)
+		{
+			// Actually none buffered
+			size_t numLiteralsToRefill = maxBufferedLiterals;
+			if (numLiteralsToRefill > remainingLiteralsAvailableToWrite)
+				numLiteralsToRefill = remainingLiteralsAvailableToWrite;
+
+			if (numLiteralsToRefill == 0)
+				return ZSTDHL_RESULT_LITERALS_SECTION_TRUNCATED;
+
+			ZSTDHL_CHECKED(gstd_Encoder_WriteLiteralRefills(enc, block, numLiteralsToRefill));
+			literalsBuffered = numLiteralsToRefill;
+		}
+		else
+		{
+			// Some were buffered, determine the actual quantity
+			if (literalsBuffered > remainingLiteralsAvailableToWrite)
+				literalsBuffered = remainingLiteralsAvailableToWrite;
+		}
+
+		numLiteralsToFlush = literalsBuffered;
+		if (numLiteralsToFlush > literalsRemaining)
+			numLiteralsToFlush = literalsRemaining;
+
+		literalsRemaining -= (uint32_t)numLiteralsToFlush;
+		enc->m_numLiteralsWritten += (uint32_t)numLiteralsToFlush;
+	}
+
+	return ZSTDHL_RESULT_OK;
 }
 
 zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block, uint32_t *outDecompressedSize)
@@ -771,6 +929,8 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 	size_t sliceBase = 0;
 	size_t laneIndex = 0;
 	uint32_t decompressedSize = 0;
+	uint32_t numSequencesProcessed = 0;
+	uint32_t litSize = 0;
 	uint32_t maxDecompressedSize = 0xffffffffu;
 	const gstd_PendingSequence_t *allSequences = (const gstd_PendingSequence_t *)enc->m_pendingSequencesVector.m_data;
 
@@ -795,15 +955,13 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 			ZSTDHL_CHECKED(zstdhl_EncodeMatchLength(seq->m_matchLength, &laneState->m_pendingMatchLength.m_value, &laneState->m_pendingMatchLength.m_extra, &laneState->m_pendingMatchLength.m_extraNumBits));
 			ZSTDHL_CHECKED(zstdhl_EncodeOffsetCode(seq->m_offsetCode, &laneState->m_pendingOffset.m_value, &laneState->m_pendingOffset.m_extra, &laneState->m_pendingOffset.m_extraNumBits));
 
-			if (maxDecompressedSize - decompressedSize < seq->m_litLength)
-				return ZSTDHL_RESULT_INTEGER_OVERFLOW;
-
-			decompressedSize += seq->m_litLength;
-
 			if (maxDecompressedSize - decompressedSize < seq->m_matchLength)
 				return ZSTDHL_RESULT_INTEGER_OVERFLOW;
 
 			decompressedSize += seq->m_matchLength;
+			litSize += seq->m_litLength;
+
+			numSequencesProcessed++;
 		}
 
 		ZSTDHL_CHECKED(gstd_Encoder_SyncBroadcastPeek(enc, fseStatesRefillSize, broadcastSize));
@@ -852,7 +1010,36 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 
 			ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &laneState->m_interleavedBitstream, laneState->m_pendingOffset.m_extra, laneState->m_pendingOffset.m_extraNumBits));
 		}
+
+		if (!(enc->m_tweaks & GSTD_TWEAK_SEPARATE_LITERALS))
+		{
+			if (block->m_litSectionHeader.m_sectionType != ZSTDHL_LITERALS_SECTION_TYPE_RLE)
+			{
+				for (laneIndex = 0; laneIndex < broadcastSize; laneIndex++)
+				{
+					ZSTDHL_CHECKED(gstd_Encoder_PutLiteralPacket(enc, block, laneSequences[laneIndex].m_litLength));
+				}
+			}
+		}
 	}
+
+	// Trailing literals
+	if (!(enc->m_tweaks & GSTD_TWEAK_SEPARATE_LITERALS))
+	{
+		if (block->m_litSectionHeader.m_sectionType != ZSTDHL_LITERALS_SECTION_TYPE_RLE)
+		{
+			uint32_t trailingLiterals = (uint32_t)(enc->m_pendingLiteralsVector.m_count - enc->m_numLiteralsWritten);
+			if (trailingLiterals > 0)
+			{
+				ZSTDHL_CHECKED(gstd_Encoder_PutLiteralPacket(enc, block, trailingLiterals));
+			}
+		}
+	}
+
+	if (maxDecompressedSize - decompressedSize < block->m_litSectionDesc.m_numValues)
+		return ZSTDHL_RESULT_INTEGER_OVERFLOW;
+
+	decompressedSize += (uint32_t) block->m_litSectionDesc.m_numValues;
 
 	*outDecompressedSize = decompressedSize;
 
@@ -1085,6 +1272,8 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeRLEBlock(gstd_EncoderState_t *enc, const 
 
 zstdhl_ResultCode_t gstd_Encoder_EncodeCompressedBlock(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block, uint32_t *outDecompressedSize, uint32_t *outAuxBit)
 {
+	enc->m_numLiteralsWritten = 0;
+
 	ZSTDHL_CHECKED(gstd_Encoder_QueueAllSequences(enc, block));
 
 	ZSTDHL_CHECKED(gstd_Encoder_ResolveInitialFSEStates(enc, block));
@@ -1093,6 +1282,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeCompressedBlock(gstd_EncoderState_t *enc,
 	ZSTDHL_CHECKED(gstd_Encoder_EncodeSequencesSection(enc, block, outDecompressedSize));
 
 	zstdhl_Vector_Clear(&enc->m_pendingSequencesVector);
+	zstdhl_Vector_Clear(&enc->m_pendingLiteralsVector);
 
 	return ZSTDHL_RESULT_OK;
 }
