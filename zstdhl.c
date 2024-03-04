@@ -1104,16 +1104,38 @@ zstdhl_ResultCode_t zstdhl_ParseFSEHuffmanWeights(const zstdhl_StreamSourceObjec
 	return ZSTDHL_RESULT_OK;
 }
 
-zstdhl_ResultCode_t zstdhl_ParseDirectHuffmanWeights(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, zstdhl_HuffmanTreeDesc_t *treeDesc, uint8_t numWeights)
+zstdhl_ResultCode_t zstdhl_ParseDirectHuffmanWeights(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, zstdhl_HuffmanTreeDesc_t *treeDesc, uint8_t *outWasteBits, uint8_t numSpecifiedWeights)
 {
+	uint32_t i = 0;
+	uint16_t weightBufSize = (numSpecifiedWeights + 1) / 2;
+	uint8_t weightBytes[128];
+	
 	treeDesc->m_huffmanWeightFormat = ZSTDHL_HUFFMAN_WEIGHT_ENCODING_UNCOMPRESSED;
+	treeDesc->m_partialWeightDesc.m_numSpecifiedWeights = numSpecifiedWeights;
 
-	return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
+	*outWasteBits = 0;
+
+	ZSTDHL_CHECKED(zstdhl_ReadChecked(streamSource, weightBytes, weightBufSize, ZSTDHL_RESULT_INPUT_FAILED));
+
+	for (i = 0; i < numSpecifiedWeights; i++)
+	{
+		if (i & 1)
+			treeDesc->m_partialWeightDesc.m_specifiedWeights[i] = (weightBytes[i / 2] & 0xf);
+		else
+			treeDesc->m_partialWeightDesc.m_specifiedWeights[i] = ((weightBytes[i / 2] >> 4) & 0xf);
+	}
+
+	if (numSpecifiedWeights & 1)
+		*outWasteBits = (weightBytes[weightBufSize - 1] & 0xf);
+
+	return ZSTDHL_RESULT_OK;
 }
 
 zstdhl_ResultCode_t zstdhl_ParseHuffmanTreeDescription(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, zstdhl_Buffers_t *buffers, zstdhl_HuffmanTreeDesc_t *treeDesc)
 {
 	uint8_t headerByte = 0;
+	uint8_t directWasteBits = 0;
+	uint8_t haveWasteBits = 0;
 
 	ZSTDHL_CHECKED(zstdhl_ReadChecked(streamSource, &headerByte, 1, ZSTDHL_RESULT_HUFFMAN_TREE_DESC_TRUNCATED));
 	
@@ -1125,10 +1147,20 @@ zstdhl_ResultCode_t zstdhl_ParseHuffmanTreeDescription(const zstdhl_StreamSource
 	}
 	else
 	{
-		ZSTDHL_CHECKED(zstdhl_ParseDirectHuffmanWeights(streamSource, disassemblyOutput, treeDesc, headerByte - 128));
+		ZSTDHL_CHECKED(zstdhl_ParseDirectHuffmanWeights(streamSource, disassemblyOutput, treeDesc, &directWasteBits, headerByte - 127));
+		haveWasteBits = ((headerByte - 127) & 1);
 	}
 
 	ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_HUFFMAN_TREE, treeDesc));
+
+	if (haveWasteBits)
+	{
+		zstdhl_WasteBitsDesc_t wasteBitsDesc;
+		wasteBitsDesc.m_bits = directWasteBits;
+		wasteBitsDesc.m_numBits = 4;
+
+		ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_WASTE_BITS, &wasteBitsDesc));
+	}
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -1914,7 +1946,18 @@ zstdhl_ResultCode_t zstdhl_ParseSequencesSection(const zstdhl_StreamSourceObject
 	}
 
 	if (numSequences == 0)
-		return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
+	{
+		zstdhl_SequencesSectionDesc_t seqSectionDesc;
+
+		seqSectionDesc.m_literalLengthsMode = ZSTDHL_SEQ_COMPRESSION_MODE_REUSE;
+		seqSectionDesc.m_offsetsMode = ZSTDHL_SEQ_COMPRESSION_MODE_REUSE;
+		seqSectionDesc.m_matchLengthsMode = ZSTDHL_SEQ_COMPRESSION_MODE_REUSE;
+		seqSectionDesc.m_numSequences = 0;
+
+		ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_SEQUENCES_SECTION, &seqSectionDesc));
+
+		return ZSTDHL_RESULT_OK;
+	}
 
 	ZSTDHL_CHECKED(zstdhl_ReadChecked(&sliceStream, &headerByte, 1, ZSTDHL_RESULT_SEQUENCES_HEADER_TRUNCATED));
 
