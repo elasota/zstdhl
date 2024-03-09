@@ -769,13 +769,16 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeRawLiterals(gstd_EncoderState_t *enc, con
 
 zstdhl_ResultCode_t gstd_Encoder_EncodeRLELiterals(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block)
 {
-	uint8_t b = 0;
-	const zstdhl_StreamSourceObject_t *streamObj = block->m_litSectionDesc.m_decompressedLiteralsStream;
+	if (enc->m_tweaks & GSTD_TWEAK_SEPARATE_LITERALS)
+	{
+		uint8_t b = 0;
+		const zstdhl_StreamSourceObject_t *streamObj = block->m_litSectionDesc.m_decompressedLiteralsStream;
 
-	ZSTDHL_CHECKED(zstdhl_ReadChecked(streamObj, &b, 1, ZSTDHL_RESULT_INPUT_FAILED));
+		ZSTDHL_CHECKED(zstdhl_ReadChecked(streamObj, &b, 1, ZSTDHL_RESULT_INPUT_FAILED));
 
-	ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
-	ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, b, 8));
+		ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
+		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, b, 8));
+	}
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -821,7 +824,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeLiteralsSection(gstd_EncoderState_t *enc,
 	case ZSTDHL_LITERALS_SECTION_TYPE_HUFFMAN_REUSE:
 		return gstd_Encoder_EncodeHuffmanLiterals(enc, block, 0, outAuxBit);
 	case ZSTDHL_LITERALS_SECTION_TYPE_RLE:
-		return gstd_Encoder_EncodeRawLiterals(enc, block);
+		return gstd_Encoder_EncodeRLELiterals(enc, block);
 	case ZSTDHL_LITERALS_SECTION_TYPE_RAW:
 		return gstd_Encoder_EncodeRawLiterals(enc, block);
 	default:
