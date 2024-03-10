@@ -376,7 +376,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeFSETable(gstd_EncoderState_t *enc, const 
 {
 	size_t i = 0;
 	uint8_t accuracyLog = table->m_accuracyLog;
-	uint8_t peekSize = accuracyLog + 3;
+	uint8_t peekSize = accuracyLog + 1 + GSTD_ZERO_PROB_REPEAT_BITS;
 	size_t numProbs = 0;
 	size_t numLanesWritten = 0;
 	uint32_t lessThanOneProbValue = zstdhl_GetLessThanOneConstant();
@@ -429,7 +429,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeFSETable(gstd_EncoderState_t *enc, const 
 
 		numLanesWritten++;
 
-		if (numLanesWritten == 32)
+		if (numLanesWritten == enc->m_numLanes)
 			numLanesWritten = 0;
 
 		probSpaceRemaining -= prob;
@@ -557,13 +557,15 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanTree(gstd_EncoderState_t *enc, con
 	
 	*outAuxBit = 0;
 
-	ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 32));
+	ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
 
 	if (huffmanTreeDesc->m_huffmanWeightFormat == ZSTDHL_HUFFMAN_WEIGHT_ENCODING_UNCOMPRESSED)
 	{
 		int i = 0;
 
 		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, 0, 8));
+
+		ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
 		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, numSpecifiedWeights, 8));
 
 		for (i = 0; i < numSpecifiedWeights; i++)
@@ -769,26 +771,23 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeRawLiterals(gstd_EncoderState_t *enc, con
 
 zstdhl_ResultCode_t gstd_Encoder_EncodeRLELiterals(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block)
 {
-	if (enc->m_tweaks & GSTD_TWEAK_SEPARATE_LITERALS)
-	{
-		uint8_t b = 0;
-		const zstdhl_StreamSourceObject_t *streamObj = block->m_litSectionDesc.m_decompressedLiteralsStream;
+	uint8_t b = 0;
+	const zstdhl_StreamSourceObject_t *streamObj = block->m_litSectionDesc.m_decompressedLiteralsStream;
 
-		ZSTDHL_CHECKED(zstdhl_ReadChecked(streamObj, &b, 1, ZSTDHL_RESULT_INPUT_FAILED));
+	ZSTDHL_CHECKED(zstdhl_ReadChecked(streamObj, &b, 1, ZSTDHL_RESULT_INPUT_FAILED));
 
-		ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
-		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, b, 8));
-	}
+	ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
+	ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, b, 8));
 
 	return ZSTDHL_RESULT_OK;
 }
 
 zstdhl_ResultCode_t gstd_Encoder_EncodePackedSize(gstd_EncoderState_t *enc, uint32_t sizeValue)
 {
-	ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 24));
 
 	if (sizeValue < 128)
 	{
+		ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
 		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, sizeValue << 1, 8));
 	}
 	else
@@ -797,12 +796,14 @@ zstdhl_ResultCode_t gstd_Encoder_EncodePackedSize(gstd_EncoderState_t *enc, uint
 
 		if (sizeValue < 16384)
 		{
+			ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 16));
 			ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, (sizeValue << 2) + 1, 16));
 		}
 		else
 		{
 			sizeValue -= 16384;
 
+			ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 24));
 			ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, (sizeValue << 2) + 3, 24));
 		}
 	}

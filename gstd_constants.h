@@ -5,6 +5,10 @@ This software is available under the terms of the MIT license
 or the Apache License, Version 2.0.  For more information, see
 the included LICENSE.txt file.
 */
+
+#ifndef __GSTD_CONSTANTS_H__
+#define __GSTD_CONSTANTS_H__
+
 #define GSTD_CONTROL_DECOMPRESSED_SIZE_OFFSET	0
 #define GSTD_CONTROL_DECOMPRESSED_SIZE_MASK		0xfffff
 
@@ -50,7 +54,8 @@ the included LICENSE.txt file.
 
 #define GSTD_MAX_ACCURACY_LOG					9
 
-#define GSTD_MAX_ZERO_PROB_REPEAT_COUNT			7
+#define GSTD_ZERO_PROB_REPEAT_BITS				3
+#define GSTD_MAX_ZERO_PROB_REPEAT_COUNT			((1 << GSTD_ZERO_PROB_REPEAT_BITS) - 1)
 
 #define GSTD_SEQ_COMPRESSION_MODE_PREDEFINED	0
 #define GSTD_SEQ_COMPRESSION_MODE_RLE			1
@@ -61,3 +66,10 @@ the included LICENSE.txt file.
 #define GSTD_BLOCK_TYPE_RLE						1
 #define GSTD_BLOCK_TYPE_COMPRESSED				2
 #define GSTD_BLOCK_TYPE_RESERVED				3
+
+#define GSTD_LITERALS_SECTION_TYPE_RAW				0
+#define GSTD_LITERALS_SECTION_TYPE_RLE				1
+#define GSTD_LITERALS_SECTION_TYPE_HUFFMAN			2
+#define GSTD_LITERALS_SECTION_TYPE_HUFFMAN_REUSE	3
+
+#endif
