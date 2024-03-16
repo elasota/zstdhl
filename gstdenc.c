@@ -372,11 +372,11 @@ zstdhl_ResultCode_t gstd_Encoder_PutBits(gstd_EncoderState_t *enc, gstd_Interlea
 	return ZSTDHL_RESULT_OK;
 }
 
-zstdhl_ResultCode_t gstd_Encoder_EncodeFSETable(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block, const zstdhl_FSETableDef_t *table)
+zstdhl_ResultCode_t gstd_Encoder_EncodeFSETable(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block, const zstdhl_FSETableDef_t *table, uint8_t maxAccuracyLog)
 {
 	size_t i = 0;
 	uint8_t accuracyLog = table->m_accuracyLog;
-	uint8_t peekSize = accuracyLog + 1 + GSTD_ZERO_PROB_REPEAT_BITS;
+	uint8_t peekSize = maxAccuracyLog + 1 + GSTD_ZERO_PROB_REPEAT_BITS;
 	size_t numProbs = 0;
 	size_t numLanesWritten = 0;
 	uint32_t lessThanOneProbValue = zstdhl_GetLessThanOneConstant();
@@ -594,7 +594,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanTree(gstd_EncoderState_t *enc, con
 
 		// Write out data
 		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, numSpecifiedWeights, 8));
-		ZSTDHL_CHECKED(gstd_Encoder_EncodeFSETable(enc, block, huffTable));
+		ZSTDHL_CHECKED(gstd_Encoder_EncodeFSETable(enc, block, huffTable, GSTD_MAX_HUFFMAN_WEIGHT_ACCURACY_LOG));
 
 		for (i = 0; i < numSpecifiedWeights; i++)
 		{
@@ -937,6 +937,22 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 	uint32_t litSize = 0;
 	uint32_t maxDecompressedSize = 0xffffffffu;
 	const gstd_PendingSequence_t *allSequences = (const gstd_PendingSequence_t *)enc->m_pendingSequencesVector.m_data;
+
+
+	if (enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+	{
+		ZSTDHL_CHECKED(gstd_Encoder_EncodeFSETable(enc, block, &enc->m_offsetTableDef, GSTD_MAX_OFFSET_ACCURACY_LOG));
+	}
+
+	if (enc->m_matchLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+	{
+		ZSTDHL_CHECKED(gstd_Encoder_EncodeFSETable(enc, block, &enc->m_matchLengthTableDef, GSTD_MAX_MATCH_LENGTH_ACCURACY_LOG));
+	}
+
+	if (enc->m_litLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+	{
+		ZSTDHL_CHECKED(gstd_Encoder_EncodeFSETable(enc, block, &enc->m_litLengthTableDef, GSTD_MAX_LIT_LENGTH_ACCURACY_LOG));
+	}
 
 	ZSTDHL_CHECKED(gstd_Encoder_EncodePackedSize(enc, block->m_seqSectionDesc.m_numSequences));
 
