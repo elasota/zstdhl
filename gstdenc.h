@@ -19,6 +19,14 @@ the included LICENSE.txt file.
 struct gstd_EncoderState;
 typedef struct gstd_EncoderState gstd_EncoderState_t;
 
+
+enum gstd_Tweak
+{
+	GSTD_TWEAK_NO_FSE_TABLE_SHUFFLE = (1 << 0),
+
+	GSTD_TWEAK_FIRST_PRIVATE_TWEAK = (1 << 1),
+};
+
 #ifdef __cplusplus
 extern "C"
 {

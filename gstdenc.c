@@ -10,6 +10,8 @@ the included LICENSE.txt file.
 #include "zstdhl_util.h"
 #include "zstdhl_internal.h"
 
+#include "gstdenc.h"
+
 typedef struct gstd_LaneState gstd_LaneState_t;
 
 #define GSTD_FLUSH_GRANULARITY		4
@@ -35,9 +37,9 @@ typedef struct gstd_PendingSequence
 	uint32_t m_offsetCode;
 } gstd_PendingSequence_t;
 
-enum gstd_Tweak
+enum gstd_PrivateTweak
 {
-	GSTD_TWEAK_SEPARATE_LITERALS	= (1 << 0),
+	GSTD_TWEAK_SEPARATE_LITERALS = (GSTD_TWEAK_FIRST_PRIVATE_TWEAK << 0),
 };
 
 typedef struct gstd_EncoderState
@@ -439,7 +441,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeFSETable(gstd_EncoderState_t *enc, const 
 }
 
 
-zstdhl_ResultCode_t gstd_BuildFSEDistributionTable(zstdhl_FSETable_t *fseTable, const zstdhl_FSETableDef_t *fseTableDef)
+zstdhl_ResultCode_t gstd_BuildFSEDistributionTable(zstdhl_FSETable_t *fseTable, const zstdhl_FSETableDef_t *fseTableDef, uint32_t tweaks)
 {
 	uint8_t accuracyLog = fseTableDef->m_accuracyLog;
 	uint32_t numCells = (1 << accuracyLog);
@@ -458,6 +460,9 @@ zstdhl_ResultCode_t gstd_BuildFSEDistributionTable(zstdhl_FSETable_t *fseTable, 
 
 	fseTable->m_numCells = numCells;
 	fseTable->m_accuracyLog = accuracyLog;
+
+	if (tweaks & GSTD_TWEAK_NO_FSE_TABLE_SHUFFLE)
+		advanceStep = 1;
 
 	for (i = 0; i < numProbs; i++)
 	{
@@ -1124,7 +1129,7 @@ zstdhl_ResultCode_t gstd_Encoder_QueueAllSequences(gstd_EncoderState_t *enc, con
 	return ZSTDHL_RESULT_OK;
 }
 
-zstdhl_ResultCode_t gstd_Encoder_ImportTable(zstdhl_SequencesCompressionMode_t sectionType, const zstdhl_EncSeqCompressionDesc_t *compressionDesc, zstdhl_SequencesCompressionMode_t *inOutMode, zstdhl_FSETableDef_t *tableDef, zstdhl_FSETable_t *table, zstdhl_FSETableEnc_t *encTable, uint32_t *probs, const zstdhl_SubstreamCompressionStructureDef_t *sdef, size_t numSymbols)
+zstdhl_ResultCode_t gstd_Encoder_ImportTable(zstdhl_SequencesCompressionMode_t sectionType, const zstdhl_EncSeqCompressionDesc_t *compressionDesc, zstdhl_SequencesCompressionMode_t *inOutMode, zstdhl_FSETableDef_t *tableDef, zstdhl_FSETable_t *table, zstdhl_FSETableEnc_t *encTable, uint32_t *probs, const zstdhl_SubstreamCompressionStructureDef_t *sdef, size_t numSymbols, uint32_t tweaks)
 {
 	if (sectionType == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
 	{
@@ -1168,7 +1173,7 @@ zstdhl_ResultCode_t gstd_Encoder_ImportTable(zstdhl_SequencesCompressionMode_t s
 	else
 		return ZSTDHL_RESULT_INTERNAL_ERROR;
 
-	ZSTDHL_CHECKED(gstd_BuildFSEDistributionTable(table, tableDef));
+	ZSTDHL_CHECKED(gstd_BuildFSEDistributionTable(table, tableDef, tweaks));
 	zstdhl_BuildFSEEncodeTable(encTable, table, numSymbols);
 
 	return ZSTDHL_RESULT_OK;
@@ -1182,9 +1187,9 @@ zstdhl_ResultCode_t gstd_Encoder_ResolveInitialFSEStates(gstd_EncoderState_t *en
 	int haveLitLengthFSE = 0;
 	size_t i = 0;
 
-	ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_offsetsMode, &block->m_offsetsModeCompressionDesc, &enc->m_offsetMode, &enc->m_offsetTableDef, &enc->m_offsetTable, &enc->m_offsetTableEnc, enc->m_offsetProbs, zstdhl_GetDefaultOffsetFSEProperties(), GSTD_MAX_OFFSET_CODE + 1));
-	ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_matchLengthsMode, &block->m_matchLengthsCompressionDesc, &enc->m_matchLengthMode, &enc->m_matchLengthTableDef, &enc->m_matchLengthTable, &enc->m_matchLengthTableEnc, enc->m_matchLengthProbs, zstdhl_GetDefaultMatchLengthFSEProperties(), GSTD_MAX_MATCH_LENGTH_CODE + 1));
-	ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_literalLengthsMode, &block->m_literalLengthsCompressionDesc, &enc->m_litLengthMode, &enc->m_litLengthTableDef, &enc->m_litLengthTable, &enc->m_litLengthTableEnc, enc->m_litLengthProbs, zstdhl_GetDefaultLitLengthFSEProperties(), GSTD_MAX_LIT_LENGTH_CODE + 1));
+	ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_offsetsMode, &block->m_offsetsModeCompressionDesc, &enc->m_offsetMode, &enc->m_offsetTableDef, &enc->m_offsetTable, &enc->m_offsetTableEnc, enc->m_offsetProbs, zstdhl_GetDefaultOffsetFSEProperties(), GSTD_MAX_OFFSET_CODE + 1, enc->m_tweaks));
+	ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_matchLengthsMode, &block->m_matchLengthsCompressionDesc, &enc->m_matchLengthMode, &enc->m_matchLengthTableDef, &enc->m_matchLengthTable, &enc->m_matchLengthTableEnc, enc->m_matchLengthProbs, zstdhl_GetDefaultMatchLengthFSEProperties(), GSTD_MAX_MATCH_LENGTH_CODE + 1, enc->m_tweaks));
+	ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_literalLengthsMode, &block->m_literalLengthsCompressionDesc, &enc->m_litLengthMode, &enc->m_litLengthTableDef, &enc->m_litLengthTable, &enc->m_litLengthTableEnc, enc->m_litLengthProbs, zstdhl_GetDefaultLitLengthFSEProperties(), GSTD_MAX_LIT_LENGTH_CODE + 1, enc->m_tweaks));
 
 	if (enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE || enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED)
 		haveOffsetFSE = 1;
@@ -1234,7 +1239,7 @@ zstdhl_ResultCode_t gstd_Encoder_ResolveInitialFSEStates(gstd_EncoderState_t *en
 		enc->m_huffWeightTableDef.m_accuracyLog = blockDef->m_accuracyLog;
 		enc->m_huffWeightTableDef.m_numProbabilities = blockDef->m_numProbabilities;
 
-		ZSTDHL_CHECKED(gstd_BuildFSEDistributionTable(&enc->m_huffWeightTable, &enc->m_huffWeightTableDef));
+		ZSTDHL_CHECKED(gstd_BuildFSEDistributionTable(&enc->m_huffWeightTable, &enc->m_huffWeightTableDef, enc->m_tweaks));
 		zstdhl_BuildFSEEncodeTable(&enc->m_huffWeightsTableEnc, &enc->m_huffWeightTable, GSTD_MAX_HUFFMAN_WEIGHT);
 
 		for (i = 0; i < numSpecifiedWeights; i++)
