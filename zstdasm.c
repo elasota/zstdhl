@@ -7,14 +7,12 @@ the included LICENSE.txt file.
 */
 
 #define _CRT_SECURE_NO_WARNINGS
-#define _CRTDBG_MAP_ALLOC
 
 #include "zstdhl.h"
 #include "gstdenc.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <crtdbg.h>
 
 #define ZSTDASM_TOKEN_BLOCK_HEADER "blockHeader"
 
@@ -70,11 +68,7 @@ void *Realloc(void *userdata, void *ptr, size_t numBytes)
 	if (ptr == NULL && numBytes == 0)
 		return NULL;
 
-	_ASSERTE(_CrtCheckMemory());
-
 	result = realloc(ptr, numBytes);
-
-	_ASSERTE(_CrtCheckMemory());
 
 	return result;
 }
