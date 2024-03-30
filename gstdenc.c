@@ -608,12 +608,11 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanTree(gstd_EncoderState_t *enc, con
 			{
 				size_t broadcastSize = numSpecifiedWeights - i;
 				uint8_t bitsToRefill = GSTD_MAX_ACCURACY_LOG;
+				if (GSTD_MAX_HUFFMAN_WEIGHT_ACCURACY_LOG > bitsToRefill)
+					bitsToRefill = GSTD_MAX_HUFFMAN_WEIGHT_ACCURACY_LOG;
 
 				if (broadcastSize > enc->m_numLanes)
 					broadcastSize = enc->m_numLanes;
-
-				if (i > 0)
-					bitsToRefill = GSTD_MAX_HUFFMAN_WEIGHT_ACCURACY_LOG;
 
 				ZSTDHL_CHECKED(gstd_Encoder_SyncBroadcastPeek(enc, bitsToRefill, broadcastSize));
 				ZSTDHL_CHECKED(gstd_Encoder_FlushStateRefill(enc, broadcastSize));
