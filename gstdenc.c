@@ -315,7 +315,7 @@ zstdhl_ResultCode_t gstd_Encoder_PutBits(gstd_EncoderState_t *enc, gstd_Interlea
 		uint8_t partialBits = (bitstream->m_numBits & 7);
 		uint8_t byteOffset = (bitstream->m_numBits / 8);
 
-		if (bitstream->m_numFlushPositions == 0)
+		if (bitstream->m_numFlushPositions == 0 || bitstream->m_numFlushPositions > 2)
 			return ZSTDHL_RESULT_INTERNAL_ERROR;
 
 		if (byteOffset >= GSTD_FLUSH_GRANULARITY)
