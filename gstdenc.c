@@ -625,8 +625,6 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanTree(gstd_EncoderState_t *enc, con
 	return ZSTDHL_RESULT_OK;
 }
 
-
-
 zstdhl_ResultCode_t gstd_GenerateHuffmanEncodeTable(const zstdhl_HuffmanTreeDesc_t *treeDesc, zstdhl_HuffmanTableEnc_t *encTable)
 {
 	uint32_t weightIterator = 0;
@@ -656,24 +654,27 @@ zstdhl_ResultCode_t gstd_GenerateHuffmanEncodeTable(const zstdhl_HuffmanTreeDesc
 		encTable->m_entries[i].m_bits = 0;
 	}
 
+	weightIterator = 0;
+
 	for (i = 0; i < maxBits; i++)
 	{
 		uint8_t numBits = maxBits - i;
 		uint8_t expectedWeight = (maxBits - numBits) + 1;
 
-		uint32_t stepping = (1u << (expectedWeight - 1));
 		uint32_t sym = 0;
 
 		for (sym = 0; sym < 256; sym++)
 		{
 			if (weightDesc.m_weights[sym] == expectedWeight)
 			{
-				weightIterator -= stepping;
-
-				encTable->m_entries[sym].m_bits = (weightIterator >> (expectedWeight - 1));
+				encTable->m_entries[sym].m_bits = zstdhl_ReverseBits32(weightIterator) >> (32 - numBits);
 				encTable->m_entries[sym].m_numBits = numBits;
+
+				weightIterator++;
 			}
 		}
+
+		weightIterator >>= 1;
 	}
 
 	return ZSTDHL_RESULT_OK;

@@ -67,6 +67,17 @@ int zstdhl_Log2_32(uint32_t value)
 	return zstdhl_Log2_16((uint16_t)value);
 }
 
+uint32_t zstdhl_ReverseBits32(uint32_t value)
+{
+	value = ((value << 16) & 0xffff0000u) | ((value >> 16) & 0x0000ffffu);
+	value = ((value << 8)  & 0xff00ff00u) | ((value >> 8)  & 0x00ff00ffu);
+	value = ((value << 4)  & 0xf0f0f0f0u) | ((value >> 4)  & 0x0f0f0f0fu);
+	value = ((value << 2)  & 0xccccccccu) | ((value >> 2)  & 0x33333333u);
+	value = ((value << 1)  & 0xaaaaaaaau) | ((value >> 1)  & 0x55555555u);
+
+	return value;
+}
+
 int zstdhl_IsPowerOf2(uint32_t value)
 {
 	if (value & (value - 1u))
