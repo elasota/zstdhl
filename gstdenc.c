@@ -943,6 +943,22 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 	uint32_t maxDecompressedSize = 0xffffffffu;
 	const gstd_PendingSequence_t *allSequences = (const gstd_PendingSequence_t *)enc->m_pendingSequencesVector.m_data;
 
+	if (enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE || enc->m_matchLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE || enc->m_litLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+	{
+		uint8_t accuracyCodeByte = 0;
+
+		if (enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+			accuracyCodeByte |= (enc->m_offsetTableDef.m_accuracyLog - GSTD_MIN_ACCURACY_LOG) << GSTD_ACCURACY_BYTE_OFFSET_POS;
+
+		if (enc->m_matchLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+			accuracyCodeByte |= (enc->m_matchLengthTableDef.m_accuracyLog - GSTD_MIN_ACCURACY_LOG) << GSTD_ACCURACY_BYTE_MATCH_LENGTH_POS;
+
+		if (enc->m_litLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+			accuracyCodeByte |= (enc->m_litLengthTableDef.m_accuracyLog - GSTD_MIN_ACCURACY_LOG) << GSTD_ACCURACY_BYTE_LIT_LENGTH_POS;
+
+		ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
+		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, accuracyCodeByte, 8));
+	}
 
 	if (enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
 	{
