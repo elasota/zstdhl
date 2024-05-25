@@ -1007,6 +1007,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 
 		ZSTDHL_CHECKED(gstd_Encoder_SyncBroadcastPeek(enc, fseStatesRefillSize, broadcastSize));
 
+		// FIXME: These need to handle all modes
 		if (enc->m_litLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED || enc->m_litLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
 		{
 			ZSTDHL_CHECKED(gstd_Encoder_FlushStateRefill(enc, broadcastSize));
@@ -1130,7 +1131,7 @@ zstdhl_ResultCode_t gstd_Encoder_QueueAllSequences(gstd_EncoderState_t *enc, con
 				seq.m_offsetCode = 3;
 			break;
 		case ZSTDHL_OFFSET_TYPE_SPECIFIED:
-			if (seqDesc.m_offsetValueNumBits > 32 || (0xffffffffu - 3u) < seqDesc.m_offsetValueBigNum[0])
+			if (seqDesc.m_offsetValueNumBits > 32 || (0xffffffffu - 3u) < seqDesc.m_offsetValueBigNum[0] || seqDesc.m_offsetValueNumBits < 1 || seqDesc.m_offsetValueBigNum[0] == 0)
 				return ZSTDHL_RESULT_INTEGER_OVERFLOW;
 
 			seq.m_offsetCode = seqDesc.m_offsetValueBigNum[0] + 3;
