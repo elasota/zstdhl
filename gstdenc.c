@@ -440,7 +440,6 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeFSETable(gstd_EncoderState_t *enc, const 
 	return ZSTDHL_RESULT_OK;
 }
 
-
 zstdhl_ResultCode_t gstd_BuildFSEDistributionTable(zstdhl_FSETable_t *fseTable, const zstdhl_FSETableDef_t *fseTableDef, uint32_t tweaks)
 {
 	uint8_t accuracyLog = fseTableDef->m_accuracyLog;
