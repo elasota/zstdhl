@@ -41,6 +41,7 @@ uint8_t gstd_ComputeMaxOffsetExtraBits(uint32_t maxFrameSize);
 
 zstdhl_ResultCode_t gstd_Encoder_Transcode(gstd_EncoderState_t *encState, const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_MemoryAllocatorObject_t *alloc);
 
+zstdhl_ResultCode_t gstd_BuildFSEDistributionTable(zstdhl_FSETable_t *fseTable, const zstdhl_FSETableDef_t *fseTableDef, uint32_t tweaks);
 
 #ifdef __cplusplus
 }
