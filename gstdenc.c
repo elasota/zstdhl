@@ -980,7 +980,10 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 	{
 		const gstd_PendingSequence_t *laneSequences = allSequences + sliceBase;
 		size_t broadcastSize = enc->m_pendingSequencesVector.m_count - sliceBase;
-		uint8_t fseStatesRefillSize = GSTD_MAX_OFFSET_ACCURACY_LOG + GSTD_MAX_LIT_LENGTH_ACCURACY_LOG + GSTD_MAX_MATCH_LENGTH_ACCURACY_LOG;
+		// Read size is determined by the previous decoded value, and all lanes start at maximum drain level,
+		// so we have to use MAX_ACCURACY_LOG * 3 here to account for initial + 2 max size drains from lit and match length.
+		// This could be reduced to 26 by ordering the offset read first.
+		uint8_t fseStatesRefillSize = GSTD_MAX_ACCURACY_LOG * 3;
 		uint8_t maxOffsetExtraBits = GSTD_MAX_OFFSET_CODE;	// enc->m_maxOffsetExtraBits
 
 		if (broadcastSize > enc->m_numLanes)
