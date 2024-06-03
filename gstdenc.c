@@ -1281,11 +1281,30 @@ zstdhl_ResultCode_t gstd_Encoder_ResolveInitialFSEStates(gstd_EncoderState_t *en
 
 zstdhl_ResultCode_t gstd_Encoder_EncodeRawBlock(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block, uint32_t *outDecompressedSize, uint8_t *outExtraByte)
 {
-	if (block->m_blockHeader.m_blockSize == 0)
+	const uint8_t *data = (const uint8_t *)block->m_uncompressedOrRLEData;
+	uint32_t size = block->m_blockHeader.m_blockSize;
+	uint32_t mainStreamSize = 0;
+	uint32_t i = 0;
+
+	if (size == 0)
 		return ZSTDHL_RESULT_BLOCK_SIZE_INVALID;
 
 	*outDecompressedSize = block->m_blockHeader.m_blockSize;
-	*outExtraByte = *((const uint8_t *) block->m_uncompressedOrRLEData);
+	*outExtraByte = *data;
+
+	mainStreamSize = size - 1;
+
+	if (mainStreamSize)
+	{
+		ZSTDHL_CHECKED(zstdhl_Vector_Append(&enc->m_pendingOutputVector, data + 1, mainStreamSize));
+	}
+
+	{
+		uint8_t zeroBytes[4] = { 0, 0, 0, 0 };
+
+		ZSTDHL_CHECKED(zstdhl_Vector_Append(&enc->m_pendingOutputVector, zeroBytes, GSTD_FLUSH_GRANULARITY - (mainStreamSize % GSTD_FLUSH_GRANULARITY)));
+	}
+
 	return ZSTDHL_RESULT_OK;
 }
 
