@@ -533,7 +533,7 @@ zstdhl_ResultCode_t WriteWasteBits(DisasmState_t *dstate, const zstdhl_WasteBits
 
 zstdhl_ResultCode_t WriteHuffmanTree(DisasmState_t *dstate, const zstdhl_HuffmanTreeDesc_t *element)
 {
-	ZSTDASM_CHECKED(WriteString(dstate, "huffmanTableStart"));
+	ZSTDASM_CHECKED(WriteString(dstate, "huffmanTableStart\n"));
 	uint16_t i = 0;
 	uint8_t numWeightDescs = element->m_partialWeightDesc.m_numSpecifiedWeights;
 
@@ -745,7 +745,7 @@ int main(int argc, const char **argv)
 		encOut.m_writeBitstreamFunc = WriteBytes;
 		encOut.m_userdata = &encOutObject;
 
-		result = gstd_Encoder_Create(&encOut, 32, maxOffsetCode , &memAllocObj, &encState);
+		result = gstd_Encoder_Create(&encOut, 32, maxOffsetCode, 0, &memAllocObj, &encState);
 		if (result == ZSTDHL_RESULT_OK)
 		{
 			streamSourceObj.m_readBytesFunc = ReadBytes;
