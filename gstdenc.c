@@ -1259,7 +1259,7 @@ zstdhl_ResultCode_t gstd_Encoder_ResolveInitialFSEStates(gstd_EncoderState_t *en
 		enc->m_huffWeightTableDef.m_numProbabilities = blockDef->m_numProbabilities;
 
 		ZSTDHL_CHECKED(gstd_BuildFSEDistributionTable(&enc->m_huffWeightTable, &enc->m_huffWeightTableDef, enc->m_tweaks));
-		zstdhl_BuildFSEEncodeTable(&enc->m_huffWeightsTableEnc, &enc->m_huffWeightTable, GSTD_MAX_HUFFMAN_WEIGHT);
+		zstdhl_BuildFSEEncodeTable(&enc->m_huffWeightsTableEnc, &enc->m_huffWeightTable, GSTD_MAX_HUFFMAN_WEIGHT + 1);
 
 		for (i = 0; i < numSpecifiedWeights; i++)
 		{
@@ -1614,7 +1614,8 @@ zstdhl_ResultCode_t gstd_TranscodeState_Init(gstd_TranscodeState_t *state, gstd_
 	state->m_fseTablePurpose = GSTD_TRANSCODE_FSE_TABLE_PURPOSE_NONE;
 
 	state->m_encBlock.m_autoBlockSizeFlag = 1;
-	state->m_encBlock.m_autoLitSizeFlag = 1;
+	state->m_encBlock.m_autoLitCompressedSizeFlag = 1;
+	state->m_encBlock.m_autoLitRegeneratedSizeFlag = 1;
 	state->m_encBlock.m_autoHuffmanStreamSizesFlags[0] = 1;
 	state->m_encBlock.m_autoHuffmanStreamSizesFlags[1] = 1;
 	state->m_encBlock.m_autoHuffmanStreamSizesFlags[2] = 1;

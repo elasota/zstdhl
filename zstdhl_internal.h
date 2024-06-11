@@ -15,5 +15,6 @@ the included LICENSE.txt file.
 
 int zstdhl_Log2_32(uint32_t value);
 uint32_t zstdhl_ReverseBits32(uint32_t value);
+int zstdhl_IsPowerOf2(uint32_t value);
 
 #endif
