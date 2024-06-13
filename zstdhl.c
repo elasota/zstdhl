@@ -3310,13 +3310,15 @@ static zstdhl_ResultCode_t zstdhl_AssembleHuffmanLiteralsSection(zstdhl_AsmState
 			return ZSTDHL_RESULT_HUFFMAN_STREAM_MODE_INVALID;
 
 		if (regeneratedSize >= 262144 || compressedSize >= 262144)
+			return ZSTDHL_RESULT_LITERALS_SECTION_TOO_LARGE;
+		else if (regeneratedSize >= 16384 || compressedSize >= 16384)
 		{
 			litSectionHeader |= 3 << 2;
 			litSectionHeader |= ((uint64_t)regeneratedSize) << 4;
 			litSectionHeader |= ((uint64_t)compressedSize) << (18 + 4);
 			litSectionHeaderSize = 5;
 		}
-		else if (regeneratedSize >= 16384 || compressedSize >= 16384)
+		else if (regeneratedSize >= 1024 || compressedSize >= 1024)
 		{
 			litSectionHeader |= 2 << 2;
 			litSectionHeader |= ((uint64_t)regeneratedSize) << 4;
