@@ -1766,7 +1766,11 @@ zstdhl_ResultCode_t zstdhl_DeflateConv_ConvertHuffmanBlock(zstdhl_DeflateConv_St
 	outTempBlockDesc->m_litSectionDesc.m_huffmanStreamSizes[2] = 0;
 	outTempBlockDesc->m_litSectionDesc.m_huffmanStreamSizes[3] = 0;
 
-	outTempBlockDesc->m_litSectionDesc.m_numValues = state->m_literalsVector.m_count;
+	if (isRLELitBlock)
+		outTempBlockDesc->m_litSectionDesc.m_numValues = 1;
+	else
+		outTempBlockDesc->m_litSectionDesc.m_numValues = state->m_literalsVector.m_count;
+
 	outTempBlockDesc->m_litSectionDesc.m_decompressedLiteralsStream = &state->m_litReader;
 	state->m_litReader.m_readBytesFunc = zstdhl_DeflateConv_ReadLits;
 	state->m_litReader.m_userdata = state;
