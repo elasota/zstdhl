@@ -3668,7 +3668,10 @@ static zstdhl_ResultCode_t zstdhl_AssembleSequencesSection(zstdhl_AsmState_t *as
 			{
 				uint8_t numPaddingBits = 8u - (bitstream.m_numBits % 8u);
 
-				ZSTDHL_CHECKED(zstdhl_WriteLEStreamBits(&bitstream, 0, numPaddingBits));
+				if (numPaddingBits != 8u)
+				{
+					ZSTDHL_CHECKED(zstdhl_WriteLEStreamBits(&bitstream, 0, numPaddingBits));
+				}
 			}
 		} // if (numSequences > 0)
 
