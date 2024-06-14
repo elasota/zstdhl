@@ -505,7 +505,7 @@ zstdhl_ResultCode_t zstdhl_DeflateConv_ConvertRawBlock(zstdhl_DeflateConv_State_
 	outTempBlockDesc->m_blockHeader.m_isLastBlock = state->m_isLastBlock;
 
 	outTempBlockDesc->m_autoBlockSizeFlag = 1;
-	outTempBlockDesc->m_uncompressedOrRLEData = &state->m_literalsVector.m_data;
+	outTempBlockDesc->m_uncompressedOrRLEData = state->m_literalsVector.m_data;
 
 	return ZSTDHL_RESULT_OK;
 }
