@@ -1584,20 +1584,29 @@ zstdhl_ResultCode_t zstdhl_DeflateConv_ScoreHuffmanTree(zstdhl_HuffmanTreeDesc_t
 
 	if (encodeTree)
 	{
-		uint64_t fseTabScore;
-		uint8_t isValid = 0;
-
-		score += 4;	// For accuracy log
-
-		fseTabScore = zstdhl_DeflateConv_ScoreTable(weightStats, ZSTDHL_MAX_HUFFMAN_CODE_LENGTH + 1, &tree->m_weightTable, 1, &isValid);
-
-		if (!isValid)
+		if (tree->m_huffmanWeightFormat == ZSTDHL_HUFFMAN_WEIGHT_ENCODING_FSE)
 		{
-			*outIsValid = 0;
-			return ZSTDHL_RESULT_OK;
-		}
+			uint64_t fseTabScore;
+			uint8_t isValid = 0;
 
-		score += fseTabScore;
+			score += 4;	// For accuracy log
+
+			fseTabScore = zstdhl_DeflateConv_ScoreTable(weightStats, ZSTDHL_MAX_HUFFMAN_CODE_LENGTH + 1, &tree->m_weightTable, 1, &isValid);
+
+			if (!isValid)
+			{
+				*outIsValid = 0;
+				return ZSTDHL_RESULT_OK;
+			}
+			score += fseTabScore;
+		}
+		else if (tree->m_huffmanWeightFormat == ZSTDHL_HUFFMAN_WEIGHT_ENCODING_UNCOMPRESSED)
+		{
+			uint16_t numWeightBytes = (((uint16_t)tree->m_partialWeightDesc.m_numSpecifiedWeights) + 1u) / 2u;
+			score += numWeightBytes * 8u;
+		}
+		else
+			return ZSTDHL_RESULT_INTERNAL_ERROR;
 	}
 
 	*outIsValid = 1;
