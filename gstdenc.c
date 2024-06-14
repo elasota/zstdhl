@@ -1206,18 +1206,21 @@ zstdhl_ResultCode_t gstd_Encoder_ResolveInitialFSEStates(gstd_EncoderState_t *en
 	int haveLitLengthFSE = 0;
 	size_t i = 0;
 
-	ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_offsetsMode, &block->m_offsetsModeCompressionDesc, &enc->m_offsetMode, &enc->m_offsetTableDef, &enc->m_offsetTable, &enc->m_offsetTableEnc, enc->m_offsetProbs, zstdhl_GetDefaultOffsetFSEProperties(), GSTD_MAX_OFFSET_CODE + 1, enc->m_tweaks));
-	ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_matchLengthsMode, &block->m_matchLengthsCompressionDesc, &enc->m_matchLengthMode, &enc->m_matchLengthTableDef, &enc->m_matchLengthTable, &enc->m_matchLengthTableEnc, enc->m_matchLengthProbs, zstdhl_GetDefaultMatchLengthFSEProperties(), GSTD_MAX_MATCH_LENGTH_CODE + 1, enc->m_tweaks));
-	ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_literalLengthsMode, &block->m_literalLengthsCompressionDesc, &enc->m_litLengthMode, &enc->m_litLengthTableDef, &enc->m_litLengthTable, &enc->m_litLengthTableEnc, enc->m_litLengthProbs, zstdhl_GetDefaultLitLengthFSEProperties(), GSTD_MAX_LIT_LENGTH_CODE + 1, enc->m_tweaks));
+	if (enc->m_pendingSequencesVector.m_count > 0)
+	{
+		ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_offsetsMode, &block->m_offsetsModeCompressionDesc, &enc->m_offsetMode, &enc->m_offsetTableDef, &enc->m_offsetTable, &enc->m_offsetTableEnc, enc->m_offsetProbs, zstdhl_GetDefaultOffsetFSEProperties(), GSTD_MAX_OFFSET_CODE + 1, enc->m_tweaks));
+		ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_matchLengthsMode, &block->m_matchLengthsCompressionDesc, &enc->m_matchLengthMode, &enc->m_matchLengthTableDef, &enc->m_matchLengthTable, &enc->m_matchLengthTableEnc, enc->m_matchLengthProbs, zstdhl_GetDefaultMatchLengthFSEProperties(), GSTD_MAX_MATCH_LENGTH_CODE + 1, enc->m_tweaks));
+		ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_literalLengthsMode, &block->m_literalLengthsCompressionDesc, &enc->m_litLengthMode, &enc->m_litLengthTableDef, &enc->m_litLengthTable, &enc->m_litLengthTableEnc, enc->m_litLengthProbs, zstdhl_GetDefaultLitLengthFSEProperties(), GSTD_MAX_LIT_LENGTH_CODE + 1, enc->m_tweaks));
 
-	if (enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE || enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED)
-		haveOffsetFSE = 1;
+		if (enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE || enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED)
+			haveOffsetFSE = 1;
 
-	if (enc->m_matchLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE || enc->m_matchLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED)
-		haveMatchLengthFSE = 1;
+		if (enc->m_matchLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE || enc->m_matchLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED)
+			haveMatchLengthFSE = 1;
 
-	if (enc->m_litLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE || enc->m_litLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED)
-		haveLitLengthFSE = 1;
+		if (enc->m_litLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE || enc->m_litLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED)
+			haveLitLengthFSE = 1;
+	}
 
 	for (i = 0; i < enc->m_pendingSequencesVector.m_count; i++)
 	{
