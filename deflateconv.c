@@ -1306,7 +1306,7 @@ static zstdhl_ResultCode_t zstdhl_DeflateConv_CreateHuffmanTreeForStats(zstdhl_H
 	// Fix oversized codes.  Taken from Zlib.
 	if (numBadLeafs > 0)
 	{
-		while (numBadLeafs > 0)
+		for (;;)
 		{
 			size_t levelToSplit = ZSTDHL_MAX_HUFFMAN_CODE_LENGTH - 1;
 			while (leafsWithBitCount[levelToSplit] == 0)
@@ -1315,10 +1315,12 @@ static zstdhl_ResultCode_t zstdhl_DeflateConv_CreateHuffmanTreeForStats(zstdhl_H
 			leafsWithBitCount[levelToSplit]--;
 			leafsWithBitCount[levelToSplit + 1] += 2;
 			leafsWithBitCount[ZSTDHL_MAX_HUFFMAN_CODE_LENGTH]--;
+
+			if (numBadLeafs <= 2)
+				break;
+
 			numBadLeafs -= 2;
 		}
-
-		numBadLeafs++;
 	}
 
 	for (i = 0; i <= ZSTDHL_MAX_HUFFMAN_CODE_LENGTH; i++)
