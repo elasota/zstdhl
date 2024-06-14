@@ -2044,10 +2044,6 @@ zstdhl_ResultCode_t zstdhl_ParseSequencesSection(const zstdhl_StreamSourceObject
 
 static zstdhl_ResultCode_t zstdhl_ParseCompressedBlock(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, zstdhl_Buffers_t *buffers, uint32_t blockSize, zstdhl_FramePersistentState_t *pstate)
 {
-#ifndef ZSTDHL_ALLOW_DECL_AFTER_STATEMENT
-	zstdhl_ResultCode_t result = ZSTDHL_RESULT_OK;
-#endif
-
 	ZSTDHL_CHECKED(zstdhl_ParseLiteralsSection(streamSource, disassemblyOutput, buffers, &blockSize, pstate));
 	ZSTDHL_CHECKED(zstdhl_ParseSequencesSection(streamSource, disassemblyOutput, buffers, blockSize, pstate));
 
