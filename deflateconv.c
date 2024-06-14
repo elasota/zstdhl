@@ -319,6 +319,9 @@ static zstdhl_ResultCode_t zstdhl_DeflateConv_PeekBits(zstdhl_DeflateConv_State_
 		size_t bytesRead = 0;
 		size_t i = 0;
 
+		if (bytesWanted > 3)
+			return ZSTDHL_RESULT_INTERNAL_ERROR;
+
 		if (!state->m_eof)
 		{
 			bytesRead = state->m_streamSource.m_readBytesFunc(state->m_streamSource.m_userdata, refillBytes, bytesWanted);
@@ -444,7 +447,67 @@ void zstdhl_DeflateConv_DestroyState(zstdhl_DeflateConv_State_t *state)
 
 zstdhl_ResultCode_t zstdhl_DeflateConv_ConvertRawBlock(zstdhl_DeflateConv_State_t *state, zstdhl_EncBlockDesc_t *outTempBlockDesc)
 {
-	return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
+	uint32_t len = 0;
+	uint32_t nlen = 0;
+	uint32_t lenRemaining = 0;
+
+	zstdhl_Vector_Clear(&state->m_literalsVector);
+
+	ZSTDHL_CHECKED(zstdhl_DeflateConv_DiscardBits(state, state->m_numStreamBits % 8u));
+
+	ZSTDHL_CHECKED(zstdhl_DeflateConv_ReadBits(state, 16, &len));
+	ZSTDHL_CHECKED(zstdhl_DeflateConv_ReadBits(state, 16, &nlen));
+
+	if (len != ((~nlen) & 0xffffu))
+		return ZSTDHL_RESULT_INVALID_VALUE;
+
+	lenRemaining = len;
+
+	while (lenRemaining > 0)
+	{
+		if (state->m_numStreamBits > 0)
+		{
+			uint32_t preloadedBits = 0;
+			uint8_t preloadedByte = 0;
+
+			if (state->m_numStreamBits % 8u != 0)
+				return ZSTDHL_RESULT_INTERNAL_ERROR;
+
+			ZSTDHL_CHECKED(zstdhl_DeflateConv_ReadBits(state, 8, &preloadedBits));
+			preloadedByte = (uint8_t)preloadedBits;
+
+			ZSTDHL_CHECKED(zstdhl_Vector_Append(&state->m_literalsVector, &preloadedByte, 1));
+
+			lenRemaining--;
+			continue;
+		}
+
+		{
+			uint8_t buffer[1024];
+			size_t amountToRead = sizeof(buffer);
+			size_t amountRead = 0;
+
+			if (lenRemaining < amountToRead)
+				amountToRead = lenRemaining;
+
+			amountRead = state->m_streamSource.m_readBytesFunc(state->m_streamSource.m_userdata, buffer, amountToRead);
+			if (amountRead != amountToRead)
+				return ZSTDHL_RESULT_INPUT_FAILED;
+
+			ZSTDHL_CHECKED(zstdhl_Vector_Append(&state->m_literalsVector, buffer, amountRead));
+			lenRemaining -= amountRead;
+		}
+	}
+
+	// Export the block
+	outTempBlockDesc->m_blockHeader.m_blockSize = len;
+	outTempBlockDesc->m_blockHeader.m_blockType = ZSTDHL_BLOCK_TYPE_RAW;
+	outTempBlockDesc->m_blockHeader.m_isLastBlock = state->m_isLastBlock;
+
+	outTempBlockDesc->m_autoBlockSizeFlag = 1;
+	outTempBlockDesc->m_uncompressedOrRLEData = &state->m_literalsVector.m_data;
+
+	return ZSTDHL_RESULT_OK;
 }
 
 zstdhl_ResultCode_t zstdhl_DeflateConv_ReadHuffmanCode(zstdhl_DeflateConv_State_t *state, const zstdhl_DeflateConv_HuffmanTree_t *tree, uint16_t *outSymbol)
