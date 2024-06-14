@@ -3486,6 +3486,9 @@ static zstdhl_ResultCode_t zstdhl_AssembleSequencesSectionTableDef(zstdhl_AsmSta
 	case ZSTDHL_SEQ_COMPRESSION_MODE_REUSE:
 		if (!tableState->m_pstate->m_isAssigned)
 			return ZSTDHL_RESULT_REUSED_TABLE_WITHOUT_EXISTING_TABLE;
+
+		if (!tableState->m_pstate->m_isRLE)
+			zstdhl_BuildFSEEncodeTable(&tableState->m_encTable, &tableState->m_pstate->m_table, tableState->m_maxSymbols);
 		break;
 	case ZSTDHL_SEQ_COMPRESSION_MODE_RLE:
 		tableState->m_pstate->m_isRLE = 1;
