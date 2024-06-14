@@ -5,32 +5,6 @@ This software is available under the terms of the MIT license
 or the Apache License, Version 2.0.  For more information, see
 the included LICENSE.txt file.
 */
-
-/*
-Portions based on zlib
-
-Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
-
-This software is provided 'as-is', without any express or implied
-warranty.  In no event will the authors be held liable for any damages
-arising from the use of this software.
-
-Permission is granted to anyone to use this software for any purpose,
-including commercial applications, and to alter it and redistribute it
-freely, subject to the following restrictions:
-
-1. The origin of this software must not be misrepresented; you must not
-   claim that you wrote the original software. If you use this software
-   in a product, an acknowledgment in the product documentation would be
-   appreciated but is not required.
-2. Altered source versions must be plainly marked as such, and must not be
-   misrepresented as being the original software.
-3. This notice may not be removed or altered from any source distribution.
-
-  Jean-loup Gailly        Mark Adler
-  jloup@gzip.org          madler@alumni.caltech.edu
-*/
-
 #include "zstdhl.h"
 #include "zstdhl_util.h"
 #include "zstdhl_internal.h"
@@ -1168,14 +1142,14 @@ static zstdhl_ResultCode_t zstdhl_DeflateConv_CreateHuffmanTreeForStats(zstdhl_H
 	size_t numSpecifiedWeights = 0;
 	size_t weightStats[ZSTDHL_MAX_HUFFMAN_CODE_LENGTH + 1];
 	uint32_t weightProbs[2][ZSTDHL_MAX_HUFFMAN_CODE_LENGTH + 1];
-	size_t leafsWithBitCount[ZSTDHL_MAX_HUFFMAN_CODE_LENGTH + 1];
+	size_t leafsWithBitCount[256];
 	size_t sortedLeafs[256];
 	uint8_t weightProbsFit[3];
 	uint64_t scores[3];
 	uint8_t haveValidScore = 0;
 	uint64_t bestScoreIndex = 0;
 	uint64_t weightRepeatsScore = 0;
-	size_t numBadLeafs = 0;
+	uint8_t haveBadLeafs = 0;
 
 	if (numStats < 2)
 		return ZSTDHL_RESULT_INTERNAL_ERROR;
@@ -1186,7 +1160,7 @@ static zstdhl_ResultCode_t zstdhl_DeflateConv_CreateHuffmanTreeForStats(zstdhl_H
 		for (i = 0; i < 256; i++)
 			sortedLeafs[i] = 0;
 
-		for (i = 0; i <= ZSTDHL_MAX_HUFFMAN_CODE_LENGTH; i++)
+		for (i = 0; i < sizeof(leafsWithBitCount) / sizeof(leafsWithBitCount[0]); i++)
 			leafsWithBitCount[i] = 0;
 
 		numNodes = 0;
@@ -1294,41 +1268,76 @@ static zstdhl_ResultCode_t zstdhl_DeflateConv_CreateHuffmanTreeForStats(zstdhl_H
 		{
 			uint16_t depth = treeNodes[i].m_depth;
 			if (depth > ZSTDHL_MAX_HUFFMAN_CODE_LENGTH)
-			{
-				numBadLeafs++;
-				leafsWithBitCount[ZSTDHL_MAX_HUFFMAN_CODE_LENGTH]++;
-			}
-			else
-				leafsWithBitCount[depth]++;
+				haveBadLeafs = 1;
+
+			leafsWithBitCount[depth]++;
+
+			if (depth > largestDepth)
+				largestDepth = depth;
 		}
 	}
 
-	// Fix oversized codes.  Taken from Zlib.
-	if (numBadLeafs > 0)
+	// Fix oversized codes
+	if (haveBadLeafs)
 	{
-		for (;;)
+		size_t depthToRemove = largestDepth;
+		size_t numLeafsToReinsert = 0;
+
+		// Go through layers bottom-up and collapse them upward by removing 1 leaf
+		while (depthToRemove > ZSTDHL_MAX_HUFFMAN_CODE_LENGTH)
 		{
-			size_t levelToSplit = ZSTDHL_MAX_HUFFMAN_CODE_LENGTH - 1;
-			while (leafsWithBitCount[levelToSplit] == 0)
-				levelToSplit--;
+			size_t leafsRemoved = leafsWithBitCount[depthToRemove] / 2u;
 
-			leafsWithBitCount[levelToSplit]--;
-			leafsWithBitCount[levelToSplit + 1] += 2;
-			leafsWithBitCount[ZSTDHL_MAX_HUFFMAN_CODE_LENGTH]--;
+			if (leafsWithBitCount[depthToRemove] & 1)
+				return ZSTDHL_RESULT_INTERNAL_ERROR;
 
-			if (numBadLeafs <= 2)
-				break;
+			numLeafsToReinsert += leafsRemoved;
+			leafsWithBitCount[depthToRemove - 1] += leafsRemoved;
+			leafsWithBitCount[depthToRemove] = 0;
 
-			numBadLeafs -= 2;
+			depthToRemove--;
+		}
+
+		// Re-add removed leafs
+		while (numLeafsToReinsert > 0)
+		{
+			uint8_t skippedALevel = 0;
+
+			size_t depthToSplit = ZSTDHL_MAX_HUFFMAN_CODE_LENGTH - 1;
+
+			// Find a splittable level
+			while (leafsWithBitCount[depthToSplit] == 0)
+			{
+				skippedALevel = 1;
+				depthToSplit--;
+			}
+
+			// Split leafs at this level.  If there are deeper levels than this, only split 1 leaf and cycle the loop again
+			{
+
+				size_t leafsToSplit = leafsWithBitCount[depthToSplit];
+				if (leafsToSplit > numLeafsToReinsert)
+					leafsToSplit = numLeafsToReinsert;
+
+				if (skippedALevel)
+					leafsToSplit = 1;
+
+				leafsWithBitCount[depthToSplit] -= leafsToSplit;
+				leafsWithBitCount[depthToSplit + 1] += leafsToSplit * 2u;
+
+				numLeafsToReinsert -= leafsToSplit;
+			}
 		}
 	}
+
+	largestDepth = 0;
 
 	for (i = 0; i <= ZSTDHL_MAX_HUFFMAN_CODE_LENGTH; i++)
 		if (leafsWithBitCount[i])
 			largestDepth = i;
 
 	// Redistribute leafs if there were bad nodes
-	if (numBadLeafs > 0)
+	if (haveBadLeafs)
 	{
 		size_t bitCount = ZSTDHL_MAX_HUFFMAN_CODE_LENGTH;
 
