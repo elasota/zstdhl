@@ -3489,7 +3489,7 @@ static zstdhl_ResultCode_t zstdhl_AssembleSequencesSectionTableDef(zstdhl_AsmSta
 	case ZSTDHL_SEQ_COMPRESSION_MODE_RLE:
 		tableState->m_pstate->m_isRLE = 1;
 		tableState->m_pstate->m_rleByte = desc->m_rleByte;
-		tableState->m_pstate->m_isAssigned;
+		tableState->m_pstate->m_isAssigned = 1;
 		ZSTDHL_CHECKED(zstdhl_WriteLEStreamBits(bitstream, desc->m_rleByte, 8));
 		break;
 	default:
