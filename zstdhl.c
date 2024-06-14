@@ -3147,7 +3147,7 @@ static zstdhl_ResultCode_t zstdhl_AssembleHuffmanDesc(zstdhl_AsmState_t *asmStat
 
 	if (desc->m_huffmanWeightFormat == ZSTDHL_HUFFMAN_WEIGHT_ENCODING_UNCOMPRESSED)
 	{
-		uint8_t headerByte = 128 + desc->m_partialWeightDesc.m_numSpecifiedWeights;
+		uint8_t headerByte = 127 + desc->m_partialWeightDesc.m_numSpecifiedWeights;
 
 		if (desc->m_partialWeightDesc.m_numSpecifiedWeights > 128)
 			return ZSTDHL_RESULT_HUFFMAN_TOO_MANY_WEIGHTS_FOR_DIRECT_ENCODING;
