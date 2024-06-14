@@ -2994,6 +2994,8 @@ static zstdhl_ResultCode_t zstdhl_AssembleHuffmanLiterals(zstdhl_AsmState_t *asm
 				bitstreamBytes[bitstreamSize - 1] >>= numPaddingBits;
 			}
 		}
+
+		i += 0;
 	}
 
 	return ZSTDHL_RESULT_OK;
@@ -3154,8 +3156,15 @@ static zstdhl_ResultCode_t zstdhl_AssembleHuffmanDesc(zstdhl_AsmState_t *asmStat
 
 		ZSTDHL_CHECKED(zstdhl_WriteLEStreamBits(&bitstream, headerByte, 8));
 
-		for (i = 0; i < desc->m_partialWeightDesc.m_numSpecifiedWeights; i++)
+		for (i = 0; i < desc->m_partialWeightDesc.m_numSpecifiedWeights; i += 2)
 		{
+			size_t secondWeightIndex = i + 1;
+			uint8_t secondWeight = 0;
+
+			if (secondWeightIndex < desc->m_partialWeightDesc.m_numSpecifiedWeights)
+				secondWeight = desc->m_partialWeightDesc.m_specifiedWeights[secondWeightIndex];
+
+			ZSTDHL_CHECKED(zstdhl_WriteLEStreamBits(&bitstream, secondWeight, 4));
 			ZSTDHL_CHECKED(zstdhl_WriteLEStreamBits(&bitstream, desc->m_partialWeightDesc.m_specifiedWeights[i], 4));
 		}
 	}
