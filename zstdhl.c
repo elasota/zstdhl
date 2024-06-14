@@ -3301,7 +3301,7 @@ static zstdhl_ResultCode_t zstdhl_AssembleHuffmanLiteralsSection(zstdhl_AsmState
 			return ZSTDHL_RESULT_LITERALS_SECTION_TOO_MUCH_DATA_FOR_1_STREAM_MODE;
 
 		litSectionHeader |= ((uint64_t)regeneratedSize) << 4;
-		litSectionHeader |= ((uint64_t)compressedSize) << 10;
+		litSectionHeader |= ((uint64_t)compressedSize) << 14;
 		litSectionHeaderSize = 3;
 	}
 	else
