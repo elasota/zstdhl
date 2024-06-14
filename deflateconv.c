@@ -267,7 +267,7 @@ struct zstdhl_DeflateConv_State
 	uint8_t m_numStreamBits;
 	uint8_t m_eof;
 	uint8_t m_isLastBlock;
-	uint8_t m_haveEncodedCompressedBlock;
+	uint8_t m_haveEncodedCompressedBlockWithSequences;
 
 	zstdhl_Vector_t m_literalsVector;
 	zstdhl_Vector_t m_sequencesVector;
@@ -390,7 +390,7 @@ zstdhl_ResultCode_t zstdhl_DeflateConv_CreateState(const zstdhl_MemoryAllocatorO
 	state->m_eof = 0;
 	state->m_isLastBlock = 0;
 	state->m_literalsEmittedSinceLastSequence = 0;
-	state->m_haveEncodedCompressedBlock = 0;
+	state->m_haveEncodedCompressedBlockWithSequences = 0;
 
 	state->m_repeatedOffset1 = 1;
 	state->m_repeatedOffset2 = 4;
@@ -1565,12 +1565,10 @@ zstdhl_ResultCode_t zstdhl_DeflateConv_FindRLEByte(const zstdhl_FSETableDef_t *t
 
 zstdhl_ResultCode_t zstdhl_DeflateConv_ConvertHuffmanBlock(zstdhl_DeflateConv_State_t *state, zstdhl_EncBlockDesc_t *outTempBlockDesc, uint8_t usePredefined)
 {
-	uint8_t isFirstCompressedBlock = !state->m_haveEncodedCompressedBlock;
+	uint8_t isFirstCompressedBlockWithSequences = !state->m_haveEncodedCompressedBlockWithSequences;
 	uint8_t isRLELitBlock = 1;
 	uint8_t useNewHuffmanTree = 0;
 	uint8_t useRawLits = 0;
-
-	state->m_haveEncodedCompressedBlock = 1;
 
 	state->m_literalsEmittedSinceLastSequence = 0;
 	zstdhl_Vector_Clear(&state->m_literalsVector);
@@ -1680,9 +1678,20 @@ zstdhl_ResultCode_t zstdhl_DeflateConv_ConvertHuffmanBlock(zstdhl_DeflateConv_St
 		}
 	}
 
-	ZSTDHL_CHECKED(zstdhl_DeflateConv_SelectOptimalFSETable(&state->m_litLengthStatsVector, &state->m_litLengthProbsVector, &state->m_tempProbsVector, &state->m_prevLitLengthsTable, &state->m_litLengthMode, zstdhl_GetDefaultLitLengthFSEProperties(), isFirstCompressedBlock));
-	ZSTDHL_CHECKED(zstdhl_DeflateConv_SelectOptimalFSETable(&state->m_matchLengthStatsVector, &state->m_matchLengthProbsVector, &state->m_tempProbsVector, &state->m_prevMatchLengthTable, &state->m_matchLengthMode, zstdhl_GetDefaultMatchLengthFSEProperties(), isFirstCompressedBlock));
-	ZSTDHL_CHECKED(zstdhl_DeflateConv_SelectOptimalFSETable(&state->m_offsetCodeStatsVector, &state->m_offsetProbsVector, &state->m_tempProbsVector, &state->m_prevOffsetsTable, &state->m_offsetMode, zstdhl_GetDefaultOffsetFSEProperties(), isFirstCompressedBlock));
+	if (state->m_sequencesVector.m_count > 0)
+	{
+		ZSTDHL_CHECKED(zstdhl_DeflateConv_SelectOptimalFSETable(&state->m_litLengthStatsVector, &state->m_litLengthProbsVector, &state->m_tempProbsVector, &state->m_prevLitLengthsTable, &state->m_litLengthMode, zstdhl_GetDefaultLitLengthFSEProperties(), isFirstCompressedBlockWithSequences));
+		ZSTDHL_CHECKED(zstdhl_DeflateConv_SelectOptimalFSETable(&state->m_matchLengthStatsVector, &state->m_matchLengthProbsVector, &state->m_tempProbsVector, &state->m_prevMatchLengthTable, &state->m_matchLengthMode, zstdhl_GetDefaultMatchLengthFSEProperties(), isFirstCompressedBlockWithSequences));
+		ZSTDHL_CHECKED(zstdhl_DeflateConv_SelectOptimalFSETable(&state->m_offsetCodeStatsVector, &state->m_offsetProbsVector, &state->m_tempProbsVector, &state->m_prevOffsetsTable, &state->m_offsetMode, zstdhl_GetDefaultOffsetFSEProperties(), isFirstCompressedBlockWithSequences));
+
+		state->m_haveEncodedCompressedBlockWithSequences = 1;
+	}
+	else
+	{
+		state->m_litLengthMode = ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED;
+		state->m_matchLengthMode = ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED;
+		state->m_offsetMode = ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED;
+	}
 
 	if (!isRLELitBlock && !useRawLits)
 	{
