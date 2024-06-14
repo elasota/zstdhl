@@ -35,11 +35,13 @@ freely, subject to the following restrictions:
 #include "zstdhl_util.h"
 #include "zstdhl_internal.h"
 
-#define ZSTDHL_DEFLATECONV_MAX_CODE_LENGTH_CODES	19
-#define ZSTDHL_DEFLATECONV_MAX_LIT_LENGTH_CODES		286
-#define ZSTDHL_DEFLATECONV_MAX_DIST_CODES			32
+#include <stdio.h>
 
-#define ZSTDHL_DEFLATECONV_MAX_ANY_CODES			286
+#define ZSTDHL_DEFLATECONV_MAX_CODE_LENGTH_CODES	19
+#define ZSTDHL_DEFLATECONV_MAX_LIT_LENGTH_CODES		288	// Actually 286 but static trees use 288
+#define ZSTDHL_DEFLATECONV_MAX_DIST_CODES			32	// Actually 30 but static trees use 32
+
+#define ZSTDHL_DEFLATECONV_MAX_ANY_CODES			288
 
 #define ZSTDHL_DEFLATECONV_MAX_CODE_LENGTH			15
 
@@ -256,6 +258,7 @@ static zstdhl_ResultCode_t zstdhl_DeflateConv_ProcessHuffmanTree(zstdhl_DeflateC
 	for (i = 0; i < tree->m_numSymbols; i++)
 	{
 		uint8_t len = tree->m_symbolLengths[i];
+
 		if (len != 0)
 		{
 			uint16_t code = nextCode[len];
@@ -264,6 +267,9 @@ static zstdhl_ResultCode_t zstdhl_DeflateConv_ProcessHuffmanTree(zstdhl_DeflateC
 
 			symCode[i] = nextCode[len];
 			nextCode[len]++;
+
+			if (len > longestLength)
+				return ZSTDHL_RESULT_HUFFMAN_TABLE_DAMAGED;
 		}
 	}
 
@@ -554,6 +560,38 @@ zstdhl_ResultCode_t zstdhl_DeflateConv_ReadCompressedTrees(zstdhl_DeflateConv_St
 	return ZSTDHL_RESULT_OK;
 }
 
+zstdhl_ResultCode_t zstdhl_DeflateConv_UseStaticHuffmanCodes(zstdhl_DeflateConv_State_t *state)
+{
+	uint8_t litLengthLengths[288];
+	uint8_t distLengths[32];
+	size_t i = 0;
+
+	for (i = 0; i < 144; i++)
+		litLengthLengths[i] = 8;
+	for (i = 144; i < 256; i++)
+		litLengthLengths[i] = 9;
+	for (i = 256; i < 280; i++)
+		litLengthLengths[i] = 7;
+	for (i = 280; i < 288; i++)
+		litLengthLengths[i] = 8;
+
+	for (i = 0; i < 32; i++)
+		distLengths[i] = 5;
+
+	state->m_litLengthTree.m_longestLength = 9;
+	state->m_litLengthTree.m_numSymbols = 288;
+	state->m_litLengthTree.m_symbolLengths = litLengthLengths;
+
+	state->m_distTree.m_longestLength = 5;
+	state->m_distTree.m_numSymbols = 32;
+	state->m_distTree.m_symbolLengths = distLengths;
+
+	ZSTDHL_CHECKED(zstdhl_DeflateConv_ProcessHuffmanTree(&state->m_litLengthTree));
+	ZSTDHL_CHECKED(zstdhl_DeflateConv_ProcessHuffmanTree(&state->m_distTree));
+
+	return ZSTDHL_RESULT_OK;
+}
+
 zstdhl_ResultCode_t zstdhl_DeflateConv_LoadDynamicHuffmanCodes(zstdhl_DeflateConv_State_t *state)
 {
 	const uint8_t codeLengthDecodeOrder[ZSTDHL_DEFLATECONV_MAX_CODE_LENGTH_CODES] = { 16, 17, 18,
@@ -609,11 +647,13 @@ zstdhl_ResultCode_t zstdhl_DeflateConv_DecodeMatch(zstdhl_DeflateConv_State_t *s
 		length = litLengthSym - 254;
 	else if (litLengthSym == 285)
 		length = 258;
-	else
+	else if (litLengthSym < 285)
 	{
 		extraBits = (litLengthSym - 261) / 4;
 		length = ((4 + ((litLengthSym - 261) & 3)) << extraBits) + 3;
 	}
+	else
+		return ZSTDHL_RESULT_INVALID_VALUE;
 
 	if (extraBits > 0)
 	{
@@ -625,12 +665,17 @@ zstdhl_ResultCode_t zstdhl_DeflateConv_DecodeMatch(zstdhl_DeflateConv_State_t *s
 	ZSTDHL_CHECKED(zstdhl_DeflateConv_ReadHuffmanCode(state, &state->m_distTree, &distSym));
 
 	if (distSym < 2)
+	{
+		extraBits = 0;
 		dist = distSym + 1;
-	else
+	}
+	else if (distSym < 30)
 	{
 		extraBits = (distSym - 2) / 2;
 		dist = ((2 + (distSym & 1)) << extraBits) + 1;
 	}
+	else
+		return ZSTDHL_RESULT_INVALID_VALUE;
 
 	if (extraBits > 0)
 	{
@@ -1522,7 +1567,9 @@ zstdhl_ResultCode_t zstdhl_DeflateConv_ConvertHuffmanBlock(zstdhl_DeflateConv_St
 	zstdhl_Vector_Clear(&state->m_offsetsVector);
 
 	if (usePredefined)
-		return ZSTDHL_RESULT_NOT_YET_IMPLEMENTED;
+	{
+		ZSTDHL_CHECKED(zstdhl_DeflateConv_UseStaticHuffmanCodes(state));
+	}
 	else
 	{
 		ZSTDHL_CHECKED(zstdhl_DeflateConv_LoadDynamicHuffmanCodes(state));
