@@ -1262,7 +1262,7 @@ zstdhl_ResultCode_t gstd_Encoder_ImportTable(zstdhl_SequencesCompressionMode_t s
 	return ZSTDHL_RESULT_OK;
 }
 
-zstdhl_ResultCode_t gstd_Encoder_ResolveInitialFSEStates(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block)
+zstdhl_ResultCode_t gstd_Encoder_ResolveInitialANSStates(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block)
 {
 	int haveHuffmanFSE = 0;
 	int haveOffsetFSE = 0;
@@ -1404,7 +1404,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeCompressedBlock(gstd_EncoderState_t *enc,
 
 	ZSTDHL_CHECKED(gstd_Encoder_QueueAllSequences(enc, block));
 
-	ZSTDHL_CHECKED(gstd_Encoder_ResolveInitialFSEStates(enc, block));
+	ZSTDHL_CHECKED(gstd_Encoder_ResolveInitialANSStates(enc, block));
 
 	ZSTDHL_CHECKED(gstd_Encoder_EncodeLiteralsSection(enc, block, outAuxBit));
 	ZSTDHL_CHECKED(gstd_Encoder_EncodeSequencesSection(enc, block, outDecompressedSize));
@@ -1520,16 +1520,16 @@ uint8_t gstd_ComputeMaxOffsetExtraBits(uint32_t maxFrameSize)
 	return (uint8_t)zstdhl_Log2_32(maxOffsetValue + 3);
 }
 
-typedef enum gstd_TranscodeFSETablePurpose
+typedef enum gstd_TranscodeANSTablePurpose
 {
-	GSTD_TRANSCODE_FSE_TABLE_PURPOSE_NONE,
+	GSTD_TRANSCODE_ANS_TABLE_PURPOSE_NONE,
 
-	GSTD_TRANSCODE_FSE_TABLE_PURPOSE_HUFFMAN_WEIGHTS,
+	GSTD_TRANSCODE_ANS_TABLE_PURPOSE_HUFFMAN_WEIGHTS,
 
-	GSTD_TRANSCODE_FSE_TABLE_PURPOSE_LIT_LENGTH,
-	GSTD_TRANSCODE_FSE_TABLE_PURPOSE_OFFSET,
-	GSTD_TRANSCODE_FSE_TABLE_PURPOSE_MATCH_LENGTH,
-} gstd_TranscodeFSETablePurpose_t;
+	GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH,
+	GSTD_TRANSCODE_ANS_TABLE_PURPOSE_OFFSET,
+	GSTD_TRANSCODE_ANS_TABLE_PURPOSE_MATCH_LENGTH,
+} gstd_TranscodeANSTablePurpose_t;
 
 typedef struct gstd_VectorByteReader
 {
@@ -1623,7 +1623,7 @@ typedef struct gstd_TranscodeState
 
 	zstdhl_EncBlockDesc_t m_encBlock;
 
-	gstd_TranscodeFSETablePurpose_t m_fseTablePurpose;
+	gstd_TranscodeANSTablePurpose_t m_fseTablePurpose;
 
 	zstdhl_Vector_t m_literalsVector;
 	zstdhl_VectorByteReader_t m_literalsReader;
@@ -1676,7 +1676,7 @@ zstdhl_ResultCode_t gstd_TranscodeState_Init(gstd_TranscodeState_t *state, gstd_
 	state->m_encBlock.m_seqCollection.m_getNextSequence = gstd_VectorSequenceReader_GetNextSequence;
 	state->m_encBlock.m_seqCollection.m_userdata = &state->m_seqReader;
 
-	state->m_fseTablePurpose = GSTD_TRANSCODE_FSE_TABLE_PURPOSE_NONE;
+	state->m_fseTablePurpose = GSTD_TRANSCODE_ANS_TABLE_PURPOSE_NONE;
 
 	state->m_encBlock.m_autoBlockSizeFlag = 1;
 	state->m_encBlock.m_autoLitCompressedSizeFlag = 1;
@@ -1731,28 +1731,28 @@ void gstd_TranscodeState_Destroy(gstd_TranscodeState_t *state)
 	zstdhl_Vector_Destroy(&state->m_uncompressedDataVector);
 }
 
-static gstd_TranscodeFSETablePurpose_t gstd_SelectNextFSETablePurpose(const gstd_TranscodeState_t *state, gstd_TranscodeFSETablePurpose_t prevPurpose)
+static gstd_TranscodeANSTablePurpose_t gstd_SelectNextFSETablePurpose(const gstd_TranscodeState_t *state, gstd_TranscodeANSTablePurpose_t prevPurpose)
 {
 	switch (prevPurpose)
 	{
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_NONE:
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_HUFFMAN_WEIGHTS:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_NONE:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_HUFFMAN_WEIGHTS:
 		if (state->m_encBlock.m_seqSectionDesc.m_literalLengthsMode == ZSTDHL_SEQ_COMPRESSION_MODE_RLE || state->m_encBlock.m_seqSectionDesc.m_literalLengthsMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
-			return GSTD_TRANSCODE_FSE_TABLE_PURPOSE_LIT_LENGTH;
+			return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH;
 
 		// Fallthrough
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_LIT_LENGTH:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH:
 		if (state->m_encBlock.m_seqSectionDesc.m_offsetsMode == ZSTDHL_SEQ_COMPRESSION_MODE_RLE || state->m_encBlock.m_seqSectionDesc.m_offsetsMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
-			return GSTD_TRANSCODE_FSE_TABLE_PURPOSE_OFFSET;
+			return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_OFFSET;
 
 		// Fallthrough
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_OFFSET:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_OFFSET:
 		if (state->m_encBlock.m_seqSectionDesc.m_matchLengthsMode == ZSTDHL_SEQ_COMPRESSION_MODE_RLE || state->m_encBlock.m_seqSectionDesc.m_matchLengthsMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
-			return GSTD_TRANSCODE_FSE_TABLE_PURPOSE_MATCH_LENGTH;
+			return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_MATCH_LENGTH;
 
 		// Fallthrough
 	default:
-		return GSTD_TRANSCODE_FSE_TABLE_PURPOSE_NONE;
+		return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_NONE;
 	}
 }
 
@@ -1770,7 +1770,7 @@ zstdhl_ResultCode_t gstd_TranscodeLiteralsSectionHeader(gstd_TranscodeState_t *s
 	state->m_encBlock.m_litSectionHeader.m_regeneratedSize = litHeader->m_regeneratedSize;
 	state->m_encBlock.m_litSectionHeader.m_sectionType = litHeader->m_sectionType;
 
-	state->m_fseTablePurpose = GSTD_TRANSCODE_FSE_TABLE_PURPOSE_HUFFMAN_WEIGHTS;
+	state->m_fseTablePurpose = GSTD_TRANSCODE_ANS_TABLE_PURPOSE_HUFFMAN_WEIGHTS;
 
 	switch (litHeader->m_sectionType)
 	{
@@ -1827,7 +1827,7 @@ zstdhl_ResultCode_t gstd_TranscodeSequencesSection(gstd_TranscodeState_t *state,
 	state->m_encBlock.m_seqSectionDesc.m_offsetsMode = seqSection->m_offsetsMode;
 	state->m_encBlock.m_seqSectionDesc.m_numSequences = seqSection->m_numSequences;
 
-	state->m_fseTablePurpose = gstd_SelectNextFSETablePurpose(state, GSTD_TRANSCODE_FSE_TABLE_PURPOSE_NONE);
+	state->m_fseTablePurpose = gstd_SelectNextFSETablePurpose(state, GSTD_TRANSCODE_ANS_TABLE_PURPOSE_NONE);
 
 	zstdhl_Vector_Clear(&state->m_seqVector);
 	state->m_seqReader.m_offset = 0;
@@ -1857,20 +1857,20 @@ zstdhl_ResultCode_t gstd_TranscodeFSETableStart(gstd_TranscodeState_t *state, co
 {
 	switch (state->m_fseTablePurpose)
 	{
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_HUFFMAN_WEIGHTS:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_HUFFMAN_WEIGHTS:
 		state->m_encBlock.m_huffmanTreeDesc.m_weightTable.m_accuracyLog = tableStartDesc->m_accuracyLog;
 		state->m_encBlock.m_huffmanTreeDesc.m_weightTable.m_numProbabilities = 0;
 		state->m_encBlock.m_huffmanTreeDesc.m_weightTable.m_probabilities = state->m_encBlock.m_huffmanTreeDesc.m_weightTableProbabilities;
 		break;
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_LIT_LENGTH:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH:
 		state->m_litLengthTable.m_accuracyLog = tableStartDesc->m_accuracyLog;
 		zstdhl_Vector_Clear(&state->m_litLengthProbsVector);
 		break;
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_OFFSET:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_OFFSET:
 		state->m_offsetTable.m_accuracyLog = tableStartDesc->m_accuracyLog;
 		zstdhl_Vector_Clear(&state->m_offsetProbsVector);
 		break;
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_MATCH_LENGTH:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_MATCH_LENGTH:
 		state->m_matchLengthTable.m_accuracyLog = tableStartDesc->m_accuracyLog;
 		zstdhl_Vector_Clear(&state->m_matchLengthProbsVector);
 		break;
@@ -1885,20 +1885,20 @@ zstdhl_ResultCode_t gstd_TranscodeFSETableEnd(gstd_TranscodeState_t *state)
 {
 	switch (state->m_fseTablePurpose)
 	{
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_HUFFMAN_WEIGHTS:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_HUFFMAN_WEIGHTS:
 		state->m_encBlock.m_huffmanTreeDesc.m_weightTable.m_probabilities = state->m_encBlock.m_huffmanTreeDesc.m_weightTableProbabilities;
 		break;
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_LIT_LENGTH:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH:
 		state->m_litLengthTable.m_probabilities = (const uint32_t *)state->m_litLengthProbsVector.m_data;
 		state->m_litLengthTable.m_numProbabilities = state->m_litLengthProbsVector.m_count;
 		state->m_fseTablePurpose = gstd_SelectNextFSETablePurpose(state, state->m_fseTablePurpose);
 		break;
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_OFFSET:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_OFFSET:
 		state->m_offsetTable.m_probabilities = (const uint32_t *)state->m_offsetProbsVector.m_data;
 		state->m_offsetTable.m_numProbabilities = state->m_offsetProbsVector.m_count;
 		state->m_fseTablePurpose = gstd_SelectNextFSETablePurpose(state, state->m_fseTablePurpose);
 		break;
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_MATCH_LENGTH:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_MATCH_LENGTH:
 		state->m_matchLengthTable.m_probabilities = (const uint32_t *)state->m_matchLengthProbsVector.m_data;
 		state->m_matchLengthTable.m_numProbabilities = state->m_matchLengthProbsVector.m_count;
 		state->m_fseTablePurpose = gstd_SelectNextFSETablePurpose(state, state->m_fseTablePurpose);
@@ -1919,18 +1919,18 @@ zstdhl_ResultCode_t gstd_TranscodeFSETableProbability(gstd_TranscodeState_t *sta
 	{
 		switch (state->m_fseTablePurpose)
 		{
-		case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_HUFFMAN_WEIGHTS:
+		case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_HUFFMAN_WEIGHTS:
 			if (state->m_encBlock.m_huffmanTreeDesc.m_weightTable.m_numProbabilities == 256)
 				return ZSTDHL_RESULT_INTERNAL_ERROR;
 			state->m_encBlock.m_huffmanTreeDesc.m_weightTableProbabilities[state->m_encBlock.m_huffmanTreeDesc.m_weightTable.m_numProbabilities++] = probDesc->m_prob;
 			break;
-		case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_LIT_LENGTH:
+		case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH:
 			ZSTDHL_CHECKED(zstdhl_Vector_Append(&state->m_litLengthProbsVector, &probDesc->m_prob, 1));
 			break;
-		case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_MATCH_LENGTH:
+		case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_MATCH_LENGTH:
 			ZSTDHL_CHECKED(zstdhl_Vector_Append(&state->m_matchLengthProbsVector, &probDesc->m_prob, 1));
 			break;
-		case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_OFFSET:
+		case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_OFFSET:
 			ZSTDHL_CHECKED(zstdhl_Vector_Append(&state->m_offsetProbsVector, &probDesc->m_prob, 1));
 			break;
 
@@ -1946,13 +1946,13 @@ zstdhl_ResultCode_t gstd_TranscodeSequenceRLEByte(gstd_TranscodeState_t *state, 
 {
 	switch (state->m_fseTablePurpose)
 	{
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_LIT_LENGTH:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH:
 		state->m_encBlock.m_literalLengthsCompressionDesc.m_rleByte = *rleByte;
 		break;
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_OFFSET:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_OFFSET:
 		state->m_encBlock.m_offsetsModeCompressionDesc.m_rleByte = *rleByte;
 		break;
-	case GSTD_TRANSCODE_FSE_TABLE_PURPOSE_MATCH_LENGTH:
+	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_MATCH_LENGTH:
 		state->m_encBlock.m_matchLengthsCompressionDesc.m_rleByte = *rleByte;
 		break;
 	default:
