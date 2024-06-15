@@ -83,4 +83,7 @@ the included LICENSE.txt file.
 #define GSTD_ACCURACY_BYTE_LIT_LENGTH_POS		5
 #define GSTD_ACCURACY_BYTE_LIT_LENGTH_MASK		7
 
+// Max possible with 32-bit reload precision is 14
+#define GSTD_RANS_PRECISION_BITS				12
+
 #endif

@@ -69,30 +69,25 @@ typedef struct gstd_EncoderState
 	zstdhl_FSETableDef_t m_matchLengthTableDef;
 	zstdhl_FSETableDef_t m_offsetTableDef;
 
-	zstdhl_FSETable_t m_huffWeightTable;
-	zstdhl_FSETable_t m_litLengthTable;
-	zstdhl_FSETable_t m_matchLengthTable;
-	zstdhl_FSETable_t m_offsetTable;
+	gstd_RANSTable_t m_huffWeightTable;
+	gstd_RANSTable_t m_litLengthTable;
+	gstd_RANSTable_t m_matchLengthTable;
+	gstd_RANSTable_t m_offsetTable;
 
-	zstdhl_FSETableEnc_t m_huffWeightsTableEnc;
-	zstdhl_FSETableEnc_t m_litLengthTableEnc;
-	zstdhl_FSETableEnc_t m_matchLengthTableEnc;
-	zstdhl_FSETableEnc_t m_offsetTableEnc;
-
-	zstdhl_FSETableCell_t m_huffWeightCells[1 << GSTD_MAX_HUFFMAN_WEIGHT_ACCURACY_LOG];
-	zstdhl_FSETableCell_t m_offsetCells[1 << GSTD_MAX_OFFSET_ACCURACY_LOG];
-	zstdhl_FSETableCell_t m_matchLengthCells[1 << GSTD_MAX_MATCH_LENGTH_ACCURACY_LOG];
-	zstdhl_FSETableCell_t m_litLengthCells[1 << GSTD_MAX_LIT_LENGTH_ACCURACY_LOG];
+	uint32_t m_huffWeightBaselines[GSTD_MAX_HUFFMAN_WEIGHT + 1];
+	uint32_t m_offsetBaselines[GSTD_MAX_OFFSET_CODE + 1];
+	uint32_t m_matchLengthBaselines[GSTD_MAX_MATCH_LENGTH_CODE + 1];
+	uint32_t m_litLengthBaselines[GSTD_MAX_LIT_LENGTH_CODE + 1];
 
 	uint32_t m_huffWeightProbs[GSTD_MAX_HUFFMAN_WEIGHT + 1];
 	uint32_t m_offsetProbs[GSTD_MAX_OFFSET_CODE + 1];
 	uint32_t m_matchLengthProbs[GSTD_MAX_MATCH_LENGTH_CODE + 1];
 	uint32_t m_litLengthProbs[GSTD_MAX_LIT_LENGTH_CODE + 1];
 
-	uint16_t m_huffWeightNextStates[(GSTD_MAX_HUFFMAN_WEIGHT + 1) << GSTD_MAX_HUFFMAN_WEIGHT_ACCURACY_LOG];
-	uint16_t m_offsetNextStates[(GSTD_MAX_OFFSET_CODE + 1) << GSTD_MAX_OFFSET_ACCURACY_LOG];
-	uint16_t m_matchLengthNextStates[(GSTD_MAX_MATCH_LENGTH_CODE + 1) << GSTD_MAX_MATCH_LENGTH_ACCURACY_LOG];
-	uint16_t m_litLengthNextStates[(GSTD_MAX_LIT_LENGTH_CODE + 1) << GSTD_MAX_LIT_LENGTH_ACCURACY_LOG];
+	uint32_t m_huffWeightProbsFixed[GSTD_MAX_HUFFMAN_WEIGHT + 1];
+	uint32_t m_offsetProbsFixed[GSTD_MAX_OFFSET_CODE + 1];
+	uint32_t m_matchLengthProbsFixed[GSTD_MAX_MATCH_LENGTH_CODE + 1];
+	uint32_t m_litLengthProbsFixed[GSTD_MAX_LIT_LENGTH_CODE + 1];
 
 	zstdhl_SequencesCompressionMode_t m_offsetMode;
 	zstdhl_SequencesCompressionMode_t m_matchLengthMode;
@@ -129,9 +124,8 @@ typedef struct gstd_LanePendingSequenceValues
 struct gstd_LaneState
 {
 	gstd_InterleavedBitstream_t m_interleavedBitstream;
-	zstdhl_FSEEncStack_t m_fseStack;
-	uint16_t m_currentFSEState;
-	uint8_t m_bitsNeededToRefill;
+	zstdhl_FSEEncStack_t m_ransStack;
+	uint16_t m_currentRANSState;
 
 	gstd_LanePendingSequenceValues_t m_pendingOffset;
 	gstd_LanePendingSequenceValues_t m_pendingMatchLength;
@@ -141,13 +135,13 @@ struct gstd_LaneState
 void gstd_LaneState_Init(gstd_LaneState_t *laneState, const zstdhl_MemoryAllocatorObject_t *alloc)
 {
 	gstd_InterleavedBitstream_Init(&laneState->m_interleavedBitstream);
-	zstdhl_FSEEncStack_Init(&laneState->m_fseStack, alloc);
-	laneState->m_currentFSEState = 0;
+	zstdhl_FSEEncStack_Init(&laneState->m_ransStack, alloc);
+	laneState->m_currentRANSState = 1;
 }
 
 void gstd_LaneState_Destroy(gstd_LaneState_t *laneState)
 {
-	zstdhl_FSEEncStack_Destroy(&laneState->m_fseStack);
+	zstdhl_FSEEncStack_Destroy(&laneState->m_ransStack);
 }
 
 
@@ -206,15 +200,15 @@ zstdhl_ResultCode_t gstd_EncoderState_Init(gstd_EncoderState_t *encState, const 
 	encState->m_offsetTableDef.m_probabilities = encState->m_offsetProbs;
 	encState->m_offsetTableDef.m_numProbabilities = 0;
 
-	encState->m_huffWeightsTableEnc.m_nextStates = encState->m_huffWeightNextStates;
-	encState->m_litLengthTableEnc.m_nextStates = encState->m_litLengthNextStates;
-	encState->m_matchLengthTableEnc.m_nextStates = encState->m_matchLengthNextStates;
-	encState->m_offsetTableEnc.m_nextStates = encState->m_offsetNextStates;
+	encState->m_huffWeightTable.m_probs = encState->m_huffWeightProbsFixed;
+	encState->m_litLengthTable.m_probs = encState->m_litLengthProbsFixed;
+	encState->m_matchLengthTable.m_probs = encState->m_matchLengthProbsFixed;
+	encState->m_offsetTable.m_probs = encState->m_offsetProbsFixed;
 
-	encState->m_huffWeightTable.m_cells = encState->m_huffWeightCells;
-	encState->m_litLengthTable.m_cells = encState->m_litLengthCells;
-	encState->m_matchLengthTable.m_cells = encState->m_matchLengthCells;
-	encState->m_offsetTable.m_cells = encState->m_offsetCells;
+	encState->m_huffWeightTable.m_baselines = encState->m_huffWeightBaselines;
+	encState->m_litLengthTable.m_baselines = encState->m_litLengthBaselines;
+	encState->m_matchLengthTable.m_baselines = encState->m_matchLengthBaselines;
+	encState->m_offsetTable.m_baselines = encState->m_offsetBaselines;
 
 	encState->m_offsetMode = ZSTDHL_SEQ_COMPRESSION_MODE_INVALID;
 	encState->m_matchLengthMode = ZSTDHL_SEQ_COMPRESSION_MODE_INVALID;
@@ -517,19 +511,82 @@ zstdhl_ResultCode_t gstd_BuildFSEDistributionTable(zstdhl_FSETable_t *fseTable, 
 
 // Perform actions corresponding to a decoder value extraction.
 // This decodes a value and puts the decoder in a drained state.
-zstdhl_ResultCode_t gstd_Encoder_CheckAndPutFSEValue(gstd_EncoderState_t *enc, size_t laneIndex, const zstdhl_FSETable_t *table, const zstdhl_FSETableEnc_t *encTable, uint16_t value)
+zstdhl_ResultCode_t gstd_Encoder_CheckAndPutRANSValue(gstd_EncoderState_t *enc, size_t laneIndex, const gstd_RANSTable_t *table, uint16_t value)
 {
-	uint16_t stateMask = (1 << table->m_accuracyLog) - 1;
 	gstd_LaneState_t *laneState = enc->m_laneStates + laneIndex;
-	const zstdhl_FSETableCell_t *cell = table->m_cells + (laneState->m_currentFSEState & stateMask);
+	uint16_t state = laneState->m_currentRANSState;
+	uint32_t i = 0;
+	uint32_t prob = table->m_probs[value];
+	uint32_t baseline = table->m_baselines[value];
+	uint16_t probMask = (1 << table->m_accuracyLog) - 1;
+	uint16_t maskedState = (state & probMask);
 
-	if (laneState->m_bitsNeededToRefill != 0)
+	if (maskedState < baseline || (maskedState - baseline) >= prob)
 		return ZSTDHL_RESULT_INTERNAL_ERROR;
 
-	if (cell->m_sym != value)
+	if (zstdhl_Log2_32(state) != GSTD_RANS_PRECISION_BITS)
 		return ZSTDHL_RESULT_INTERNAL_ERROR;
 
-	laneState->m_bitsNeededToRefill = cell->m_numBits;
+	laneState->m_currentRANSState = (state >> table->m_accuracyLog) * prob + (state & ((1 << table->m_accuracyLog) - 1)) - baseline;
+
+	return ZSTDHL_RESULT_OK;
+}
+
+zstdhl_ResultCode_t gstd_BuildRANSTable(gstd_RANSTable_t *ransTable, const zstdhl_FSETableDef_t *fseTableDef, uint32_t tweaks)
+{
+	uint32_t i = 0;
+	uint32_t baseline = 0;
+
+	ransTable->m_numProbabilities = (uint32_t)fseTableDef->m_numProbabilities;
+	ransTable->m_accuracyLog = fseTableDef->m_accuracyLog;
+
+	if (ransTable->m_probs == fseTableDef->m_probabilities)
+		return ZSTDHL_RESULT_INTERNAL_ERROR;
+
+	for (i = 0; i < fseTableDef->m_numProbabilities; i++)
+	{
+		uint32_t prob = fseTableDef->m_probabilities[i];
+		uint32_t nextBaseline = 0;
+
+		if (prob == zstdhl_GetLessThanOneConstant())
+			prob = 1;
+
+		nextBaseline = baseline + prob;
+
+		ransTable->m_baselines[i] = baseline;
+		ransTable->m_probs[i] = prob;
+
+		baseline = nextBaseline;
+	}
+
+	return ZSTDHL_RESULT_OK;
+}
+
+zstdhl_ResultCode_t gstd_EncodeRANSValue(zstdhl_FSEEncStack_t *stack, const gstd_RANSTable_t *table, uint16_t value)
+{
+	if (stack->m_statesStackVector.m_count == 0)
+	{
+		uint16_t initialState = table->m_baselines[value] + (1 << GSTD_RANS_PRECISION_BITS);
+		ZSTDHL_CHECKED(zstdhl_Vector_Append(&stack->m_statesStackVector, &initialState, 1));
+	}
+	else
+	{
+		uint32_t prob = table->m_probs[value];
+		uint32_t baseline = table->m_baselines[value];
+		uint8_t accuracyBits = table->m_accuracyLog;
+		uint16_t prevState = ((const uint16_t *)stack->m_statesStackVector.m_data)[stack->m_statesStackVector.m_count - 1];
+		uint32_t unnormalizedStateMax = prob << ((GSTD_RANS_PRECISION_BITS - table->m_accuracyLog) + 1);
+		uint16_t nextState = 0;
+
+		while (prevState >= unnormalizedStateMax)
+			prevState >>= 1;
+
+		nextState = ((prevState / prob) << table->m_accuracyLog) + (prevState % prob) + baseline;
+		ZSTDHL_CHECKED(zstdhl_Vector_Append(&stack->m_statesStackVector, &nextState, 1));
+
+		if (nextState >= 2 << GSTD_RANS_PRECISION_BITS)
+			return ZSTDHL_RESULT_INTERNAL_ERROR;
+	}
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -543,12 +600,19 @@ zstdhl_ResultCode_t gstd_Encoder_FlushStateRefill(gstd_EncoderState_t *enc, size
 	for (laneIndex = 0; laneIndex < numLanes; laneIndex++)
 	{
 		gstd_LaneState_t *laneState = enc->m_laneStates + laneIndex;
-		uint16_t drainMask = (1 << laneState->m_bitsNeededToRefill) - 1;
 
-		ZSTDHL_CHECKED(zstdhl_FSEEncStack_Pop(&laneState->m_fseStack, &laneState->m_currentFSEState));
+		uint8_t bitsNeededToRefill = GSTD_RANS_PRECISION_BITS - zstdhl_Log2_32(laneState->m_currentRANSState);
+		uint16_t drainMask = (1 << bitsNeededToRefill) - 1;
+		uint16_t nextState = 0;
 
-		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &laneState->m_interleavedBitstream, laneState->m_currentFSEState & drainMask, laneState->m_bitsNeededToRefill));
-		laneState->m_bitsNeededToRefill = 0;
+		ZSTDHL_CHECKED(zstdhl_FSEEncStack_Pop(&laneState->m_ransStack, &nextState));
+
+		if ((nextState >> bitsNeededToRefill) != laneState->m_currentRANSState)
+			return ZSTDHL_RESULT_INTERNAL_ERROR;
+
+		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &laneState->m_interleavedBitstream, nextState & drainMask, bitsNeededToRefill));
+
+		laneState->m_currentRANSState = nextState;
 	}
 
 	return ZSTDHL_RESULT_OK;
@@ -606,7 +670,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanTree(gstd_EncoderState_t *enc, con
 			if (laneIndex == 0)
 			{
 				size_t broadcastSize = numSpecifiedWeights - i;
-				uint8_t bitsToRefill = GSTD_MAX_ACCURACY_LOG;
+				uint8_t bitsToRefill = GSTD_RANS_PRECISION_BITS;
 				if (GSTD_MAX_HUFFMAN_WEIGHT_ACCURACY_LOG > bitsToRefill)
 					bitsToRefill = GSTD_MAX_HUFFMAN_WEIGHT_ACCURACY_LOG;
 
@@ -617,7 +681,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanTree(gstd_EncoderState_t *enc, con
 				ZSTDHL_CHECKED(gstd_Encoder_FlushStateRefill(enc, broadcastSize));
 			}
 
-			ZSTDHL_CHECKED(gstd_Encoder_CheckAndPutFSEValue(enc, laneIndex, &enc->m_huffWeightTable, &enc->m_huffWeightsTableEnc, huffmanTreeDesc->m_partialWeightDesc.m_specifiedWeights[i]));
+			ZSTDHL_CHECKED(gstd_Encoder_CheckAndPutRANSValue(enc, laneIndex, &enc->m_huffWeightTable, huffmanTreeDesc->m_partialWeightDesc.m_specifiedWeights[i]));
 		}
 	}
 
@@ -981,9 +1045,10 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 		const gstd_PendingSequence_t *laneSequences = allSequences + sliceBase;
 		size_t broadcastSize = enc->m_pendingSequencesVector.m_count - sliceBase;
 		// Read size is determined by the previous decoded value, and all lanes start at maximum drain level,
-		// so we have to use MAX_ACCURACY_LOG * 3 here to account for initial + 2 max size drains from lit and match length.
-		// This could be reduced to 26 by ordering the offset read first.
-		uint8_t fseStatesRefillSize = GSTD_MAX_ACCURACY_LOG * 3;
+		// so we have to use GSTD_MAX_ACCURACY_LOG * 2 + GSTD_RANS_PRECISION_BITS here to account for
+		// initial + 2 max size drains from lit and match length.
+		// This could be reduced by ordering the offset read first.
+		uint8_t fseStatesRefillSize = GSTD_MAX_ACCURACY_LOG * 2 + GSTD_RANS_PRECISION_BITS;
 		uint8_t maxOffsetExtraBits = GSTD_MAX_OFFSET_CODE;	// enc->m_maxOffsetExtraBits
 
 		if (broadcastSize > enc->m_numLanes)
@@ -1015,7 +1080,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 			ZSTDHL_CHECKED(gstd_Encoder_FlushStateRefill(enc, broadcastSize));
 
 			for (laneIndex = 0; laneIndex < broadcastSize; laneIndex++)
-				ZSTDHL_CHECKED(gstd_Encoder_CheckAndPutFSEValue(enc, laneIndex, &enc->m_litLengthTable, &enc->m_litLengthTableEnc, enc->m_laneStates[laneIndex].m_pendingLitLength.m_value));
+				ZSTDHL_CHECKED(gstd_Encoder_CheckAndPutRANSValue(enc, laneIndex, &enc->m_litLengthTable, enc->m_laneStates[laneIndex].m_pendingLitLength.m_value));
 		}
 
 		if (enc->m_matchLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED || enc->m_matchLengthMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
@@ -1023,7 +1088,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 			ZSTDHL_CHECKED(gstd_Encoder_FlushStateRefill(enc, broadcastSize));
 
 			for (laneIndex = 0; laneIndex < broadcastSize; laneIndex++)
-				ZSTDHL_CHECKED(gstd_Encoder_CheckAndPutFSEValue(enc, laneIndex, &enc->m_matchLengthTable, &enc->m_matchLengthTableEnc, enc->m_laneStates[laneIndex].m_pendingMatchLength.m_value));
+				ZSTDHL_CHECKED(gstd_Encoder_CheckAndPutRANSValue(enc, laneIndex, &enc->m_matchLengthTable, enc->m_laneStates[laneIndex].m_pendingMatchLength.m_value));
 		}
 
 		if (enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED || enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
@@ -1031,7 +1096,7 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeSequencesSection(gstd_EncoderState_t *enc
 			ZSTDHL_CHECKED(gstd_Encoder_FlushStateRefill(enc, broadcastSize));
 
 			for (laneIndex = 0; laneIndex < broadcastSize; laneIndex++)
-				ZSTDHL_CHECKED(gstd_Encoder_CheckAndPutFSEValue(enc, laneIndex, &enc->m_offsetTable, &enc->m_offsetTableEnc, enc->m_laneStates[laneIndex].m_pendingOffset.m_value));
+				ZSTDHL_CHECKED(gstd_Encoder_CheckAndPutRANSValue(enc, laneIndex, &enc->m_offsetTable, enc->m_laneStates[laneIndex].m_pendingOffset.m_value));
 		}
 
 		ZSTDHL_CHECKED(gstd_Encoder_SyncBroadcastPeek(enc, GSTD_MAX_LIT_LENGTH_EXTRA_BITS + GSTD_MAX_MATCH_LENGTH_EXTRA_BITS, broadcastSize));
@@ -1148,7 +1213,7 @@ zstdhl_ResultCode_t gstd_Encoder_QueueAllSequences(gstd_EncoderState_t *enc, con
 	return ZSTDHL_RESULT_OK;
 }
 
-zstdhl_ResultCode_t gstd_Encoder_ImportTable(zstdhl_SequencesCompressionMode_t sectionType, const zstdhl_EncSeqCompressionDesc_t *compressionDesc, zstdhl_SequencesCompressionMode_t *inOutMode, zstdhl_FSETableDef_t *tableDef, zstdhl_FSETable_t *table, zstdhl_FSETableEnc_t *encTable, uint32_t *probs, const zstdhl_SubstreamCompressionStructureDef_t *sdef, size_t numSymbols, uint32_t tweaks)
+zstdhl_ResultCode_t gstd_Encoder_ImportTable(zstdhl_SequencesCompressionMode_t sectionType, const zstdhl_EncSeqCompressionDesc_t *compressionDesc, zstdhl_SequencesCompressionMode_t *inOutMode, zstdhl_FSETableDef_t *tableDef, gstd_RANSTable_t *table, uint32_t *probs, const zstdhl_SubstreamCompressionStructureDef_t *sdef, size_t numSymbols, uint32_t tweaks)
 {
 	if (sectionType == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
 	{
@@ -1192,8 +1257,7 @@ zstdhl_ResultCode_t gstd_Encoder_ImportTable(zstdhl_SequencesCompressionMode_t s
 	else
 		return ZSTDHL_RESULT_INTERNAL_ERROR;
 
-	ZSTDHL_CHECKED(gstd_BuildFSEDistributionTable(table, tableDef, tweaks));
-	zstdhl_BuildFSEEncodeTable(encTable, table, numSymbols);
+	ZSTDHL_CHECKED(gstd_BuildRANSTable(table, tableDef, tweaks));
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -1208,9 +1272,9 @@ zstdhl_ResultCode_t gstd_Encoder_ResolveInitialFSEStates(gstd_EncoderState_t *en
 
 	if (enc->m_pendingSequencesVector.m_count > 0)
 	{
-		ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_offsetsMode, &block->m_offsetsModeCompressionDesc, &enc->m_offsetMode, &enc->m_offsetTableDef, &enc->m_offsetTable, &enc->m_offsetTableEnc, enc->m_offsetProbs, zstdhl_GetDefaultOffsetFSEProperties(), GSTD_MAX_OFFSET_CODE + 1, enc->m_tweaks));
-		ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_matchLengthsMode, &block->m_matchLengthsCompressionDesc, &enc->m_matchLengthMode, &enc->m_matchLengthTableDef, &enc->m_matchLengthTable, &enc->m_matchLengthTableEnc, enc->m_matchLengthProbs, zstdhl_GetDefaultMatchLengthFSEProperties(), GSTD_MAX_MATCH_LENGTH_CODE + 1, enc->m_tweaks));
-		ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_literalLengthsMode, &block->m_literalLengthsCompressionDesc, &enc->m_litLengthMode, &enc->m_litLengthTableDef, &enc->m_litLengthTable, &enc->m_litLengthTableEnc, enc->m_litLengthProbs, zstdhl_GetDefaultLitLengthFSEProperties(), GSTD_MAX_LIT_LENGTH_CODE + 1, enc->m_tweaks));
+		ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_offsetsMode, &block->m_offsetsModeCompressionDesc, &enc->m_offsetMode, &enc->m_offsetTableDef, &enc->m_offsetTable, enc->m_offsetProbs, zstdhl_GetDefaultOffsetFSEProperties(), GSTD_MAX_OFFSET_CODE + 1, enc->m_tweaks));
+		ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_matchLengthsMode, &block->m_matchLengthsCompressionDesc, &enc->m_matchLengthMode, &enc->m_matchLengthTableDef, &enc->m_matchLengthTable, enc->m_matchLengthProbs, zstdhl_GetDefaultMatchLengthFSEProperties(), GSTD_MAX_MATCH_LENGTH_CODE + 1, enc->m_tweaks));
+		ZSTDHL_CHECKED(gstd_Encoder_ImportTable(block->m_seqSectionDesc.m_literalLengthsMode, &block->m_literalLengthsCompressionDesc, &enc->m_litLengthMode, &enc->m_litLengthTableDef, &enc->m_litLengthTable, enc->m_litLengthProbs, zstdhl_GetDefaultLitLengthFSEProperties(), GSTD_MAX_LIT_LENGTH_CODE + 1, enc->m_tweaks));
 
 		if (enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE || enc->m_offsetMode == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED)
 			haveOffsetFSE = 1;
@@ -1234,19 +1298,19 @@ zstdhl_ResultCode_t gstd_Encoder_ResolveInitialFSEStates(gstd_EncoderState_t *en
 		if (haveOffsetFSE)
 		{
 			ZSTDHL_CHECKED(zstdhl_EncodeOffsetCode(seq->m_offsetCode, &fseValue, &extraValue, &extraBits));
-			ZSTDHL_CHECKED(zstdhl_EncodeFSEValue(&enc->m_laneStates[laneIndex].m_fseStack, &enc->m_offsetTableEnc, &enc->m_offsetTable, fseValue));
+			ZSTDHL_CHECKED(gstd_EncodeRANSValue(&enc->m_laneStates[laneIndex].m_ransStack, &enc->m_offsetTable, fseValue));
 		}
 
 		if (haveMatchLengthFSE)
 		{
 			ZSTDHL_CHECKED(zstdhl_EncodeMatchLength(seq->m_matchLength, &fseValue, &extraValue, &extraBits));
-			ZSTDHL_CHECKED(zstdhl_EncodeFSEValue(&enc->m_laneStates[laneIndex].m_fseStack, &enc->m_matchLengthTableEnc, &enc->m_matchLengthTable, fseValue));
+			ZSTDHL_CHECKED(gstd_EncodeRANSValue(&enc->m_laneStates[laneIndex].m_ransStack, &enc->m_matchLengthTable, fseValue));
 		}
 
 		if (haveLitLengthFSE)
 		{
 			ZSTDHL_CHECKED(zstdhl_EncodeLitLength(seq->m_litLength, &fseValue, &extraValue, &extraBits));
-			ZSTDHL_CHECKED(zstdhl_EncodeFSEValue(&enc->m_laneStates[laneIndex].m_fseStack, &enc->m_litLengthTableEnc, &enc->m_litLengthTable, fseValue));
+			ZSTDHL_CHECKED(gstd_EncodeRANSValue(&enc->m_laneStates[laneIndex].m_ransStack, &enc->m_litLengthTable, fseValue));
 		}
 	}
 
@@ -1261,8 +1325,7 @@ zstdhl_ResultCode_t gstd_Encoder_ResolveInitialFSEStates(gstd_EncoderState_t *en
 		enc->m_huffWeightTableDef.m_accuracyLog = blockDef->m_accuracyLog;
 		enc->m_huffWeightTableDef.m_numProbabilities = blockDef->m_numProbabilities;
 
-		ZSTDHL_CHECKED(gstd_BuildFSEDistributionTable(&enc->m_huffWeightTable, &enc->m_huffWeightTableDef, enc->m_tweaks));
-		zstdhl_BuildFSEEncodeTable(&enc->m_huffWeightsTableEnc, &enc->m_huffWeightTable, GSTD_MAX_HUFFMAN_WEIGHT + 1);
+		ZSTDHL_CHECKED(gstd_BuildRANSTable(&enc->m_huffWeightTable, &enc->m_huffWeightTableDef, enc->m_tweaks));
 
 		for (i = 0; i < numSpecifiedWeights; i++)
 		{
@@ -1270,7 +1333,7 @@ zstdhl_ResultCode_t gstd_Encoder_ResolveInitialFSEStates(gstd_EncoderState_t *en
 			size_t laneIndex = weightIndex % enc->m_numLanes;
 			uint8_t fseValue = block->m_huffmanTreeDesc.m_partialWeightDesc.m_specifiedWeights[weightIndex];
 
-			ZSTDHL_CHECKED(zstdhl_EncodeFSEValue(&enc->m_laneStates[laneIndex].m_fseStack, &enc->m_huffWeightsTableEnc, &enc->m_huffWeightTable, fseValue));
+			ZSTDHL_CHECKED(gstd_EncodeRANSValue(&enc->m_laneStates[laneIndex].m_ransStack, &enc->m_huffWeightTable, fseValue));
 		}
 	}
 
@@ -1278,8 +1341,7 @@ zstdhl_ResultCode_t gstd_Encoder_ResolveInitialFSEStates(gstd_EncoderState_t *en
 	{
 		gstd_LaneState_t *laneState = enc->m_laneStates + i;
 
-		laneState->m_currentFSEState = 0;
-		laneState->m_bitsNeededToRefill = GSTD_MAX_ACCURACY_LOG;
+		laneState->m_currentRANSState = 1;
 	}
 
 	return ZSTDHL_RESULT_OK;
