@@ -1956,7 +1956,7 @@ zstdhl_ResultCode_t zstdhl_ParseSequencesSection(const zstdhl_StreamSourceObject
 			uint8_t nbSeqByte3 = 0;
 			ZSTDHL_CHECKED(zstdhl_ReadChecked(&sliceStream, &nbSeqByte3, 1, ZSTDHL_RESULT_SEQUENCES_HEADER_TRUNCATED));
 
-			numSequences = (nbSeqByte2 << 8) + nbSeqByte3 + 0x7f00u;
+			numSequences = nbSeqByte2 + (nbSeqByte3 << 8) + 0x7f00u;
 		}
 	}
 
