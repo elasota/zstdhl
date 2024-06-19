@@ -237,13 +237,90 @@ typedef struct zstdhl_FramePersistentState
 	uint32_t m_matchLengthProbs[53];
 } zstdhl_FramePersistentState_t;
 
-void zstdhl_FramePersistentState_Init(zstdhl_FramePersistentState_t *pstate)
+zstdhl_ResultCode_t zstdhl_FramePersistentState_Init(zstdhl_FramePersistentState_t *pstate, const zstdhl_DictDesc_t *dictDesc)
 {
-	pstate->m_haveHuffmanTable = 0;
+	if (dictDesc)
+	{
+		int tabIndex = 0;
 
-	pstate->m_literalLengthsCDef.m_isDefined = 0;
-	pstate->m_matchLengthsCDef.m_isDefined = 0;
-	pstate->m_offsetsCDef.m_isDefined = 0;
+		const zstdhl_SubstreamCompressionStructureDef_t *sdefs[3] =
+		{
+			zstdhl_GetDefaultLitLengthFSEProperties(),
+			zstdhl_GetDefaultOffsetFSEProperties(),
+			zstdhl_GetDefaultMatchLengthFSEProperties(),
+		};
+
+		zstdhl_SequencesSubstreamCompressionDef_t *sscds[3] =
+		{
+			&pstate->m_literalLengthsCDef,
+			&pstate->m_offsetsCDef,
+			&pstate->m_matchLengthsCDef,
+		};
+
+		const zstdhl_FSETableDef_t *srcDefs[3] =
+		{
+			&dictDesc->m_litLengthDesc,
+			&dictDesc->m_offsetDesc,
+			&dictDesc->m_matchLengthDesc,
+		};
+
+		uint32_t *probArrays[3] =
+		{
+			pstate->m_litLengthProbs,
+			pstate->m_offsetProbs,
+			pstate->m_matchLengthProbs,
+		};
+
+		size_t probArraySizes[3] =
+		{
+			sizeof(pstate->m_litLengthProbs),
+			sizeof(pstate->m_offsetProbs),
+			sizeof(pstate->m_matchLengthProbs),
+		};
+
+		pstate->m_haveHuffmanTable = 1;
+		ZSTDHL_CHECKED(zstdhl_GenerateHuffmanDecodeTable(&dictDesc->m_huffmanTreeDesc.m_partialWeightDesc, &pstate->m_huffmanTable));
+
+		for (tabIndex = 0; tabIndex < 3; tabIndex++)
+		{
+			uint32_t *probArray = probArrays[tabIndex];
+			size_t probArrayLimit = probArraySizes[tabIndex] / sizeof(probArray[0]);
+			const zstdhl_FSETableDef_t *def = srcDefs[tabIndex];
+			zstdhl_SequencesSubstreamCompressionDef_t *sscd = sscds[tabIndex];
+			const zstdhl_SubstreamCompressionStructureDef_t *sdef = sdefs[tabIndex];
+			size_t i = 0;
+
+			if (def->m_accuracyLog < ZSTDHL_MIN_ACCURACY_LOG)
+				return ZSTDHL_RESULT_ACCURACY_LOG_TOO_SMALL;
+
+			if (def->m_accuracyLog > sdef->m_maxAccuracyLog)
+				return ZSTDHL_RESULT_ACCURACY_LOG_TOO_LARGE;
+
+			if (def->m_numProbabilities > probArrayLimit)
+				return ZSTDHL_RESULT_TOO_MANY_PROBS;
+
+			if (def->m_numProbabilities == 0)
+				return ZSTDHL_RESULT_PROBABILITY_TABLE_INVALID;
+
+			sscd->m_fseTableDef.m_probabilities = probArray;
+			sscd->m_fseTableDef.m_accuracyLog = def->m_accuracyLog;
+			sscd->m_fseTableDef.m_numProbabilities = def->m_numProbabilities;
+			sscd->m_isDefined = 1;
+				
+			for (i = 0; i < def->m_numProbabilities; i++)
+				probArray[i] = def->m_probabilities[i];
+		}
+	}
+	else
+	{
+		pstate->m_haveHuffmanTable = 0;
+
+		pstate->m_literalLengthsCDef.m_isDefined = 0;
+		pstate->m_matchLengthsCDef.m_isDefined = 0;
+		pstate->m_offsetsCDef.m_isDefined = 0;
+	}
+
+	return ZSTDHL_RESULT_OK;
 }
 
 typedef struct zstdhl_ForwardBitstream
@@ -867,7 +944,6 @@ zstdhl_ResultCode_t zstdhl_DecodeFSEDescription(zstdhl_ForwardBitstream_t *bitst
 	}
 
 	ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_FSE_TABLE_END, NULL));
-
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -2459,16 +2535,101 @@ zstdhl_ResultCode_t zstdhl_ResolveOffsetCode32(zstdhl_OffsetType_t offsetType, u
 	}
 }
 
-ZSTDHL_EXTERN zstdhl_ResultCode_t zstdhl_Disassemble(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, const zstdhl_MemoryAllocatorObject_t *alloc)
+ZSTDHL_EXTERN zstdhl_ResultCode_t zstdhl_Disassemble(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DictDesc_t *dictDesc, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, const zstdhl_MemoryAllocatorObject_t *alloc)
 {
 	zstdhl_ResultCode_t result = ZSTDHL_RESULT_OK;
 	zstdhl_Buffers_t buffers;
 	zstdhl_FramePersistentState_t pstate;
 
 	zstdhl_Buffers_Init(&buffers, alloc);
-	zstdhl_FramePersistentState_Init(&pstate);
+	if (result == ZSTDHL_RESULT_OK)
+		result = zstdhl_FramePersistentState_Init(&pstate, dictDesc);
 
-	result = zstdhl_DisassembleImpl(streamSource, disassemblyOutput, &buffers, &pstate);
+	if (result == ZSTDHL_RESULT_OK)
+		result = zstdhl_DisassembleImpl(streamSource, disassemblyOutput, &buffers, &pstate);
+
+	zstdhl_Buffers_DeallocAll(&buffers);
+
+	return result;
+}
+
+// Dictionary disassembly
+zstdhl_ResultCode_t zstdhl_DisassembleDictImpl(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, zstdhl_Buffers_t *buffers, zstdhl_FramePersistentState_t *pstate)
+{
+	uint8_t bytes[12];
+	size_t i = 0;
+	zstdhl_DictHeaderDesc_t headerDesc;
+	zstdhl_DictRecentOffsets_t recentOffsets;
+
+	ZSTDHL_CHECKED(zstdhl_ReadChecked(streamSource, bytes, 8, ZSTDHL_RESULT_INPUT_FAILED));
+
+	if (bytes[0] != 0x37 || bytes[1] != 0xa4 || bytes[2] != 0x30 || bytes[3] != 0xec)
+		return ZSTDHL_RESULT_MAGIC_NUMBER_MISMATCH;
+
+	headerDesc.m_dictID = 0;
+	for (i = 0; i < 4; i++)
+		headerDesc.m_dictID |= ((uint32_t)bytes[4 + i]) << (i * 8);
+
+	ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_DICT_START, &headerDesc));
+
+	// Decode entropy tables
+	{
+		zstdhl_HuffmanTreeDesc_t treeDesc;
+		ZSTDHL_CHECKED(zstdhl_ParseHuffmanTreeDescription(streamSource, disassemblyOutput, buffers, &treeDesc));
+		ZSTDHL_CHECKED(zstdhl_GenerateHuffmanDecodeTable(&treeDesc.m_partialWeightDesc, &pstate->m_huffmanTable));
+		pstate->m_haveHuffmanTable = 1;
+
+		{
+			zstdhl_SimpleProbDecodeState_t litLenProbHandler;
+			zstdhl_SimpleProbDecodeState_t matchLenProbHandler;
+			zstdhl_OffsetProbDecodeState_t offsetProbHandler;
+			uint8_t headerByte = 0xa8;
+
+			offsetProbHandler.m_alternator = 0;
+			offsetProbHandler.m_buffers = buffers;
+			offsetProbHandler.m_currentCapacity = 0;
+
+			zstdhl_SimpleProbDecodeState_Init(&litLenProbHandler, pstate->m_litLengthProbs, zstdhl_litLenSDef.m_numProbs, ZSTDHL_RESULT_TOO_MANY_PROBS);
+			zstdhl_SimpleProbDecodeState_Init(&matchLenProbHandler, pstate->m_matchLengthProbs, zstdhl_matchLenSDef.m_numProbs, ZSTDHL_RESULT_TOO_MANY_PROBS);
+
+			// Not the same order as sequences
+			ZSTDHL_CHECKED(zstdhl_ParseCompressionDef(streamSource, disassemblyOutput, headerByte, 4, &zstdhl_offsetCodeSDef, &pstate->m_offsetsCDef, zstdhl_OffsetsRequestMoreCapacity, zstdhl_OffsetsClear, &offsetProbHandler));
+			ZSTDHL_CHECKED(zstdhl_ParseCompressionDef(streamSource, disassemblyOutput, headerByte, 2, &zstdhl_matchLenSDef, &pstate->m_matchLengthsCDef, zstdhl_SimpleProbRequestMoreCapacity, zstdhl_SimpleProbClear, &matchLenProbHandler));
+			ZSTDHL_CHECKED(zstdhl_ParseCompressionDef(streamSource, disassemblyOutput, headerByte, 6, &zstdhl_litLenSDef, &pstate->m_literalLengthsCDef, zstdhl_SimpleProbRequestMoreCapacity, zstdhl_SimpleProbClear, &litLenProbHandler));
+		}
+	}
+
+	ZSTDHL_CHECKED(zstdhl_ReadChecked(streamSource, bytes, 12, ZSTDHL_RESULT_INPUT_FAILED));
+
+	recentOffsets.m_offset1 = 0;
+	recentOffsets.m_offset2 = 0;
+	recentOffsets.m_offset3 = 0;
+	for (i = 0; i < 4; i++)
+	{
+		recentOffsets.m_offset1 |= ((uint32_t)bytes[0 + i]) << (i * 8);
+		recentOffsets.m_offset2 |= ((uint32_t)bytes[4 + i]) << (i * 8);
+		recentOffsets.m_offset3 |= ((uint32_t)bytes[8 + i]) << (i * 8);
+	}
+
+	// We don't store offsets in pstate because they're not required for any part of the disassembly
+	ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_DICT_RECENT_OFFSETS, &recentOffsets));
+	ZSTDHL_CHECKED(disassemblyOutput->m_reportDisassembledElementFunc(disassemblyOutput->m_userdata, ZSTDHL_ELEMENT_TYPE_DICT_END, &headerDesc));
+
+	return ZSTDHL_RESULT_OK;
+}
+
+ZSTDHL_EXTERN zstdhl_ResultCode_t zstdhl_DisassembleDict(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, const zstdhl_MemoryAllocatorObject_t *alloc)
+{
+	zstdhl_ResultCode_t result = ZSTDHL_RESULT_OK;
+	zstdhl_Buffers_t buffers;
+	zstdhl_FramePersistentState_t pstate;
+
+	zstdhl_Buffers_Init(&buffers, alloc);
+	if (result == ZSTDHL_RESULT_OK)
+		result = zstdhl_FramePersistentState_Init(&pstate, NULL);
+
+	if (result == ZSTDHL_RESULT_OK)
+		result = zstdhl_DisassembleDictImpl(streamSource, disassemblyOutput, &buffers, &pstate);
 
 	zstdhl_Buffers_DeallocAll(&buffers);
 

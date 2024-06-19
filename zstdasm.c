@@ -724,7 +724,7 @@ int main(int argc, const char **argv)
 		memAllocObj.m_reallocFunc = Realloc;
 		memAllocObj.m_userdata = NULL;
 
-		result = zstdhl_Disassemble(&streamSourceObj, &disasmObject, &memAllocObj);
+		result = zstdhl_Disassemble(&streamSourceObj, NULL, &disasmObject, &memAllocObj);
 
 		zstdhl_Vector_Destroy(&disasmState.m_bigNumU32Vector);
 		zstdhl_Vector_Destroy(&disasmState.m_bigNumDigitVector);
@@ -751,7 +751,7 @@ int main(int argc, const char **argv)
 			streamSourceObj.m_readBytesFunc = ReadBytes;
 			streamSourceObj.m_userdata = inputF;
 
-			result = gstd_Encoder_Transcode(encState, &streamSourceObj, &memAllocObj);
+			result = gstd_Encoder_Transcode(encState, &streamSourceObj, NULL, &memAllocObj);
 
 			gstd_Encoder_Destroy(encState);
 		}

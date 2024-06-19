@@ -133,6 +133,7 @@ typedef enum zstdhl_ResultCode
 	ZSTDHL_RESULT_REUSED_TABLE_WITHOUT_EXISTING_TABLE,
 	ZSTDHL_RESULT_SYMBOL_DOES_NOT_MATCH_RLE,
 	ZSTDHL_RESULT_LITERALS_SECTION_TOO_LARGE,
+	ZSTDHL_RESULT_DICTIONARY_MISMATCH,
 
 	// Misc errors
 	ZSTDHL_RESULT_INTERNAL_ERROR,
@@ -354,6 +355,31 @@ typedef struct zstdhl_FSETableStartDesc
 	uint8_t m_accuracyLog;
 } zstdhl_FSETableStartDesc_t;
 
+typedef struct zstdhl_DictHeaderDesc
+{
+	uint32_t m_dictID;
+} zstdhl_DictHeaderDesc_t;
+
+typedef struct zstdhl_DictRecentOffsets
+{
+	uint32_t m_offset1;
+	uint32_t m_offset2;
+	uint32_t m_offset3;
+} zstdhl_DictRecentOffsets_t;
+
+typedef struct zstdhl_DictDesc
+{
+	zstdhl_DictHeaderDesc_t m_dictHeader;
+
+	zstdhl_FSETableDef_t m_matchLengthDesc;
+	zstdhl_FSETableDef_t m_litLengthDesc;
+	zstdhl_FSETableDef_t m_offsetDesc;
+	zstdhl_HuffmanTreeDesc_t m_huffmanTreeDesc;
+
+	zstdhl_DictRecentOffsets_t m_recentOffsets;
+} zstdhl_DictDesc_t;
+
+
 typedef enum zstdhl_ElementType
 {
 	ZSTDHL_ELEMENT_TYPE_FRAME_HEADER,				// zstdhl_FrameHeaderDesc_t
@@ -377,6 +403,10 @@ typedef enum zstdhl_ElementType
 
 	ZSTDHL_ELEMENT_TYPE_BLOCK_END,					// Nothing
 	ZSTDHL_ELEMENT_TYPE_FRAME_END,					// Nothing
+
+	ZSTDHL_ELEMENT_TYPE_DICT_START,					// zstdhl_DictHeaderDesc_t
+	ZSTDHL_ELEMENT_TYPE_DICT_RECENT_OFFSETS,		// zstdhl_DictRecentOffsets_t
+	ZSTDHL_ELEMENT_TYPE_DICT_END,					// Nothing
 } zstdhl_ElementType_t;
 
 typedef struct zstdhl_DisassemblyOutputObject
@@ -492,7 +522,8 @@ extern "C"
 {
 #endif
 
-zstdhl_ResultCode_t zstdhl_Disassemble(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, const zstdhl_MemoryAllocatorObject_t *alloc);
+zstdhl_ResultCode_t zstdhl_DisassembleDict(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, const zstdhl_MemoryAllocatorObject_t *alloc);
+zstdhl_ResultCode_t zstdhl_Disassemble(const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_DictDesc_t *dictDesc, const zstdhl_DisassemblyOutputObject_t *disassemblyOutput, const zstdhl_MemoryAllocatorObject_t *alloc);
 zstdhl_ResultCode_t zstdhl_InitAssemblerState(zstdhl_AssemblerPersistentState_t *persistentState);
 zstdhl_ResultCode_t zstdhl_AssembleFrame(const zstdhl_FrameHeaderDesc_t *encFrame, const zstdhl_EncoderOutputObject_t *assemblyOutput, uint64_t optFrameContentSize);
 zstdhl_ResultCode_t zstdhl_AssembleBlock(zstdhl_AssemblerPersistentState_t *persistentState, const zstdhl_EncBlockDesc_t *encBlock, const zstdhl_EncoderOutputObject_t *assemblyOutput, const zstdhl_MemoryAllocatorObject_t *alloc);

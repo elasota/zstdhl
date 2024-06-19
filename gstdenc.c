@@ -94,6 +94,7 @@ typedef struct gstd_EncoderState
 	zstdhl_SequencesCompressionMode_t m_litLengthMode;
 
 	zstdhl_HuffmanTableEnc_t m_huffmanEnc;
+	uint8_t m_haveHuffmanTree;
 
 	uint32_t m_numLiteralsWritten;
 
@@ -163,6 +164,7 @@ zstdhl_ResultCode_t gstd_EncoderState_Init(gstd_EncoderState_t *encState, const 
 	encState->m_maxOffsetExtraBits = GSTD_MAX_OFFSET_CODE;
 	encState->m_syncCommandReadOffset = 0;
 	encState->m_tweaks = tweakFlags;
+	encState->m_haveHuffmanTree = 0;
 
 	ZSTDHL_CHECKED(zstdhl_Vector_Append(&encState->m_laneStateVector, NULL, numLanes));
 
@@ -253,6 +255,140 @@ zstdhl_ResultCode_t gstd_Encoder_Create(const zstdhl_EncoderOutputObject_t *outp
 	}
 
 	*outEncState = encState;
+	return ZSTDHL_RESULT_OK;
+}
+
+static zstdhl_ResultCode_t gstd_GenerateHuffmanEncodeTable(const zstdhl_HuffmanTreeDesc_t *treeDesc, zstdhl_HuffmanTableEnc_t *encTable)
+{
+	uint32_t weightIterator = 0;
+	uint32_t i = 0;
+	uint8_t maxBits = 0;
+	uint8_t upshiftBits = 0;
+	zstdhl_HuffmanTreeWeightDesc_t weightDesc;
+
+	ZSTDHL_CHECKED(zstdhl_ExpandHuffmanWeightTable(&treeDesc->m_partialWeightDesc, &weightDesc));
+
+	for (i = 0; i < 256; i++)
+	{
+		uint8_t weight = weightDesc.m_weights[i];
+
+		if (weight > 0)
+			weightIterator += (1u << (weight - 1));
+	}
+
+	maxBits = zstdhl_Log2_32(weightIterator);
+
+	if (maxBits > GSTD_MAX_HUFFMAN_WEIGHT)
+		return ZSTDHL_RESULT_INTERNAL_ERROR;
+
+	for (i = 0; i < 256; i++)
+	{
+		encTable->m_entries[i].m_numBits = 0;
+		encTable->m_entries[i].m_bits = 0;
+	}
+
+	weightIterator = 0;
+
+	for (i = 0; i < maxBits; i++)
+	{
+		uint8_t numBits = maxBits - i;
+		uint8_t expectedWeight = (maxBits - numBits) + 1;
+
+		uint32_t sym = 0;
+
+		for (sym = 0; sym < 256; sym++)
+		{
+			if (weightDesc.m_weights[sym] == expectedWeight)
+			{
+				encTable->m_entries[sym].m_bits = zstdhl_ReverseBits32(weightIterator) >> (32 - numBits);
+				encTable->m_entries[sym].m_numBits = numBits;
+
+				weightIterator++;
+			}
+		}
+
+		weightIterator >>= 1;
+	}
+
+	return ZSTDHL_RESULT_OK;
+}
+
+
+zstdhl_ResultCode_t gstd_Encoder_ImportTable(zstdhl_SequencesCompressionMode_t sectionType, const zstdhl_EncSeqCompressionDesc_t *compressionDesc, zstdhl_SequencesCompressionMode_t *inOutMode, zstdhl_FSETableDef_t *tableDef, gstd_RANSTable_t *table, uint32_t *probs, const zstdhl_SubstreamCompressionStructureDef_t *sdef, size_t numSymbols, uint32_t tweaks)
+{
+	if (sectionType == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+	{
+		size_t i = 0;
+
+		tableDef->m_accuracyLog = compressionDesc->m_fseProbs->m_accuracyLog;
+		tableDef->m_numProbabilities = compressionDesc->m_fseProbs->m_numProbabilities;
+
+		for (i = 0; i < tableDef->m_numProbabilities; i++)
+			probs[i] = compressionDesc->m_fseProbs->m_probabilities[i];
+
+		*inOutMode = ZSTDHL_SEQ_COMPRESSION_MODE_FSE;
+	}
+	else if (sectionType == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED)
+	{
+		size_t i = 0;
+
+		if ((*inOutMode) == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED)
+			return ZSTDHL_RESULT_OK;	// Don't need to rebuild
+
+		tableDef->m_accuracyLog = sdef->m_defaultAccuracyLog;
+		tableDef->m_numProbabilities = sdef->m_numProbs;
+
+		for (i = 0; i < sdef->m_numProbs; i++)
+			probs[i] = sdef->m_defaultProbs[i];
+
+		*inOutMode = ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED;
+	}
+	else if (sectionType == ZSTDHL_SEQ_COMPRESSION_MODE_RLE)
+	{
+		*inOutMode = ZSTDHL_SEQ_COMPRESSION_MODE_RLE;
+		return ZSTDHL_RESULT_OK;
+	}
+	else if (sectionType == ZSTDHL_SEQ_COMPRESSION_MODE_REUSE)
+	{
+		if ((*inOutMode) == ZSTDHL_SEQ_COMPRESSION_MODE_INVALID)
+			return ZSTDHL_RESULT_INTERNAL_ERROR;
+
+		return ZSTDHL_RESULT_OK;
+	}
+	else
+		return ZSTDHL_RESULT_INTERNAL_ERROR;
+
+	ZSTDHL_CHECKED(gstd_BuildRANSTable(table, tableDef, tweaks));
+
+	return ZSTDHL_RESULT_OK;
+}
+
+zstdhl_ResultCode_t gstd_Encoder_Reset(gstd_EncoderState_t *enc, const zstdhl_DictDesc_t *dict)
+{
+	enc->m_offsetMode = ZSTDHL_SEQ_COMPRESSION_MODE_INVALID;
+	enc->m_litLengthMode = ZSTDHL_SEQ_COMPRESSION_MODE_INVALID;
+	enc->m_matchLengthMode = ZSTDHL_SEQ_COMPRESSION_MODE_INVALID;
+	enc->m_haveHuffmanTree = 0;
+
+	if (dict)
+	{
+		zstdhl_EncSeqCompressionDesc_t offsetsSeqDesc;
+		zstdhl_EncSeqCompressionDesc_t matchLengthsSeqDesc;
+		zstdhl_EncSeqCompressionDesc_t litLengthsSeqDesc;
+
+		enc->m_haveHuffmanTree = 1;
+
+		ZSTDHL_CHECKED(gstd_GenerateHuffmanEncodeTable(&dict->m_huffmanTreeDesc, &enc->m_huffmanEnc));
+
+		offsetsSeqDesc.m_fseProbs = &dict->m_offsetDesc;
+		matchLengthsSeqDesc.m_fseProbs = &dict->m_matchLengthDesc;
+		litLengthsSeqDesc.m_fseProbs = &dict->m_litLengthDesc;
+
+		ZSTDHL_CHECKED(gstd_Encoder_ImportTable(ZSTDHL_SEQ_COMPRESSION_MODE_FSE, &offsetsSeqDesc, &enc->m_offsetMode, &enc->m_offsetTableDef, &enc->m_offsetTable, enc->m_offsetProbs, zstdhl_GetDefaultOffsetFSEProperties(), GSTD_MAX_OFFSET_CODE + 1, enc->m_tweaks));
+		ZSTDHL_CHECKED(gstd_Encoder_ImportTable(ZSTDHL_SEQ_COMPRESSION_MODE_FSE, &matchLengthsSeqDesc, &enc->m_matchLengthMode, &enc->m_matchLengthTableDef, &enc->m_matchLengthTable, enc->m_matchLengthProbs, zstdhl_GetDefaultMatchLengthFSEProperties(), GSTD_MAX_MATCH_LENGTH_CODE + 1, enc->m_tweaks));
+		ZSTDHL_CHECKED(gstd_Encoder_ImportTable(ZSTDHL_SEQ_COMPRESSION_MODE_FSE, &litLengthsSeqDesc, &enc->m_litLengthMode, &enc->m_litLengthTableDef, &enc->m_litLengthTable, enc->m_litLengthProbs, zstdhl_GetDefaultLitLengthFSEProperties(), GSTD_MAX_LIT_LENGTH_CODE + 1, enc->m_tweaks));
+	}
+
 	return ZSTDHL_RESULT_OK;
 }
 
@@ -578,6 +714,9 @@ zstdhl_ResultCode_t gstd_EncodeRANSValue(zstdhl_FSEEncStack_t *stack, const gstd
 		uint32_t unnormalizedStateMax = prob << ((GSTD_RANS_PRECISION_BITS - table->m_accuracyLog) + 1);
 		uint16_t nextState = 0;
 
+		if (prob == 0)
+			return ZSTDHL_RESULT_FSE_TABLE_MISSING_SYMBOL;
+
 		while (prevState >= unnormalizedStateMax)
 			prevState >>= 1;
 
@@ -688,61 +827,6 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanTree(gstd_EncoderState_t *enc, con
 	return ZSTDHL_RESULT_OK;
 }
 
-zstdhl_ResultCode_t gstd_GenerateHuffmanEncodeTable(const zstdhl_HuffmanTreeDesc_t *treeDesc, zstdhl_HuffmanTableEnc_t *encTable)
-{
-	uint32_t weightIterator = 0;
-	uint32_t i = 0;
-	uint8_t maxBits = 0;
-	uint8_t upshiftBits = 0;
-	zstdhl_HuffmanTreeWeightDesc_t weightDesc;
-
-	ZSTDHL_CHECKED(zstdhl_ExpandHuffmanWeightTable(&treeDesc->m_partialWeightDesc, &weightDesc));
-
-	for (i = 0; i < 256; i++)
-	{
-		uint8_t weight = weightDesc.m_weights[i];
-
-		if (weight > 0)
-			weightIterator += (1u << (weight - 1));
-	}
-
-	maxBits = zstdhl_Log2_32(weightIterator);
-
-	if (maxBits > GSTD_MAX_HUFFMAN_WEIGHT)
-		return ZSTDHL_RESULT_INTERNAL_ERROR;
-
-	for (i = 0; i < 256; i++)
-	{
-		encTable->m_entries[i].m_numBits = 0;
-		encTable->m_entries[i].m_bits = 0;
-	}
-
-	weightIterator = 0;
-
-	for (i = 0; i < maxBits; i++)
-	{
-		uint8_t numBits = maxBits - i;
-		uint8_t expectedWeight = (maxBits - numBits) + 1;
-
-		uint32_t sym = 0;
-
-		for (sym = 0; sym < 256; sym++)
-		{
-			if (weightDesc.m_weights[sym] == expectedWeight)
-			{
-				encTable->m_entries[sym].m_bits = zstdhl_ReverseBits32(weightIterator) >> (32 - numBits);
-				encTable->m_entries[sym].m_numBits = numBits;
-
-				weightIterator++;
-			}
-		}
-
-		weightIterator >>= 1;
-	}
-
-	return ZSTDHL_RESULT_OK;
-}
-
 static zstdhl_ResultCode_t gstd_Encoder_QueuePendingLiterals(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block)
 {
 	uint8_t buffer[1024];
@@ -773,11 +857,17 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeHuffmanLiterals(gstd_EncoderState_t *enc,
 	if (haveNewTree)
 	{
 		ZSTDHL_CHECKED(gstd_Encoder_EncodeHuffmanTree(enc, block, outAuxBit));
+		enc->m_haveHuffmanTree = 1;
 
 		ZSTDHL_CHECKED(gstd_GenerateHuffmanEncodeTable(&block->m_huffmanTreeDesc, &enc->m_huffmanEnc));
 	}
 	else
+	{
+		if (!enc->m_haveHuffmanTree)
+			return ZSTDHL_RESULT_HUFFMAN_TABLE_NOT_SET;
+
 		*outAuxBit = 0;
+	}
 
 	if (enc->m_tweaks & GSTD_TWEAK_SEPARATE_LITERALS)
 	{
@@ -1213,55 +1303,6 @@ zstdhl_ResultCode_t gstd_Encoder_QueueAllSequences(gstd_EncoderState_t *enc, con
 	return ZSTDHL_RESULT_OK;
 }
 
-zstdhl_ResultCode_t gstd_Encoder_ImportTable(zstdhl_SequencesCompressionMode_t sectionType, const zstdhl_EncSeqCompressionDesc_t *compressionDesc, zstdhl_SequencesCompressionMode_t *inOutMode, zstdhl_FSETableDef_t *tableDef, gstd_RANSTable_t *table, uint32_t *probs, const zstdhl_SubstreamCompressionStructureDef_t *sdef, size_t numSymbols, uint32_t tweaks)
-{
-	if (sectionType == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
-	{
-		size_t i = 0;
-
-		tableDef->m_accuracyLog = compressionDesc->m_fseProbs->m_accuracyLog;
-		tableDef->m_numProbabilities = compressionDesc->m_fseProbs->m_numProbabilities;
-
-		for (i = 0; i < tableDef->m_numProbabilities; i++)
-			probs[i] = compressionDesc->m_fseProbs->m_probabilities[i];
-
-		*inOutMode = ZSTDHL_SEQ_COMPRESSION_MODE_FSE;
-	}
-	else if (sectionType == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED)
-	{
-		size_t i = 0;
-
-		if ((*inOutMode) == ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED)
-			return ZSTDHL_RESULT_OK;	// Don't need to rebuild
-
-		tableDef->m_accuracyLog = sdef->m_defaultAccuracyLog;
-		tableDef->m_numProbabilities = sdef->m_numProbs;
-
-		for (i = 0; i < sdef->m_numProbs; i++)
-			probs[i] = sdef->m_defaultProbs[i];
-
-		*inOutMode = ZSTDHL_SEQ_COMPRESSION_MODE_PREDEFINED;
-	}
-	else if (sectionType == ZSTDHL_SEQ_COMPRESSION_MODE_RLE)
-	{
-		*inOutMode = ZSTDHL_SEQ_COMPRESSION_MODE_RLE;
-		return ZSTDHL_RESULT_OK;
-	}
-	else if (sectionType == ZSTDHL_SEQ_COMPRESSION_MODE_REUSE)
-	{
-		if ((*inOutMode) == ZSTDHL_SEQ_COMPRESSION_MODE_INVALID)
-			return ZSTDHL_RESULT_INTERNAL_ERROR;
-
-		return ZSTDHL_RESULT_OK;
-	}
-	else
-		return ZSTDHL_RESULT_INTERNAL_ERROR;
-
-	ZSTDHL_CHECKED(gstd_BuildRANSTable(table, tableDef, tweaks));
-
-	return ZSTDHL_RESULT_OK;
-}
-
 zstdhl_ResultCode_t gstd_Encoder_ResolveInitialANSStates(gstd_EncoderState_t *enc, const zstdhl_EncBlockDesc_t *block)
 {
 	int haveHuffmanFSE = 0;
@@ -1388,12 +1429,6 @@ zstdhl_ResultCode_t gstd_Encoder_EncodeRLEBlock(gstd_EncoderState_t *enc, const 
 	*outDecompressedSize = block->m_blockHeader.m_blockSize;
 
 	*outExtraByte = blockBytes[0];
-
-	for (i = 1; i < block->m_blockHeader.m_blockSize; i++)
-	{
-		ZSTDHL_CHECKED(gstd_Encoder_SyncPeek(enc, &enc->m_rawBytesBitstream, 8));
-		ZSTDHL_CHECKED(gstd_Encoder_PutBits(enc, &enc->m_rawBytesBitstream, blockBytes[i], 8));
-	}
 
 	return ZSTDHL_RESULT_OK;
 }
@@ -1648,6 +1683,10 @@ typedef struct gstd_TranscodeState
 
 	uint8_t m_rleByte;
 	uint32_t m_rleSize;
+
+	uint8_t m_isInDictionary;
+
+	zstdhl_DictDesc_t m_dictDesc;
 } gstd_TranscodeState_t;
 
 zstdhl_ResultCode_t gstd_TranscodeState_Init(gstd_TranscodeState_t *state, gstd_EncoderState_t *enc, const zstdhl_MemoryAllocatorObject_t *alloc)
@@ -1657,6 +1696,8 @@ zstdhl_ResultCode_t gstd_TranscodeState_Init(gstd_TranscodeState_t *state, gstd_
 	state->m_enc = enc;
 	state->m_rleByte = 0;
 	state->m_rleSize = 0;
+	state->m_isInDictionary = 0;
+	state->m_dictDesc.m_dictHeader.m_dictID = 0;
 
 	zstdhl_Vector_Init(&state->m_literalsVector, 1, alloc);
 	zstdhl_Vector_Init(&state->m_seqVector, sizeof(gstd_Sequence_t), alloc);
@@ -1733,29 +1774,64 @@ void gstd_TranscodeState_Destroy(gstd_TranscodeState_t *state)
 
 static gstd_TranscodeANSTablePurpose_t gstd_SelectNextFSETablePurpose(const gstd_TranscodeState_t *state, gstd_TranscodeANSTablePurpose_t prevPurpose)
 {
-	switch (prevPurpose)
+	if (state->m_isInDictionary)
 	{
-	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_NONE:
-	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_HUFFMAN_WEIGHTS:
-		if (state->m_encBlock.m_seqSectionDesc.m_literalLengthsMode == ZSTDHL_SEQ_COMPRESSION_MODE_RLE || state->m_encBlock.m_seqSectionDesc.m_literalLengthsMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
-			return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH;
-
-		// Fallthrough
-	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH:
-		if (state->m_encBlock.m_seqSectionDesc.m_offsetsMode == ZSTDHL_SEQ_COMPRESSION_MODE_RLE || state->m_encBlock.m_seqSectionDesc.m_offsetsMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+		switch (prevPurpose)
+		{
+		case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_NONE:
+		case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_HUFFMAN_WEIGHTS:
 			return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_OFFSET;
 
-		// Fallthrough
-	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_OFFSET:
-		if (state->m_encBlock.m_seqSectionDesc.m_matchLengthsMode == ZSTDHL_SEQ_COMPRESSION_MODE_RLE || state->m_encBlock.m_seqSectionDesc.m_matchLengthsMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+		case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_OFFSET:
 			return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_MATCH_LENGTH;
 
-		// Fallthrough
-	default:
-		return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_NONE;
+		case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_MATCH_LENGTH:
+			return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH;
+
+		default:
+			return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_NONE;
+		}
+	}
+	else
+	{
+		switch (prevPurpose)
+		{
+		case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_NONE:
+		case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_HUFFMAN_WEIGHTS:
+			if (state->m_encBlock.m_seqSectionDesc.m_literalLengthsMode == ZSTDHL_SEQ_COMPRESSION_MODE_RLE || state->m_encBlock.m_seqSectionDesc.m_literalLengthsMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+				return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH;
+
+			// Fallthrough
+		case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH:
+			if (state->m_encBlock.m_seqSectionDesc.m_offsetsMode == ZSTDHL_SEQ_COMPRESSION_MODE_RLE || state->m_encBlock.m_seqSectionDesc.m_offsetsMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+				return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_OFFSET;
+
+			// Fallthrough
+		case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_OFFSET:
+			if (state->m_encBlock.m_seqSectionDesc.m_matchLengthsMode == ZSTDHL_SEQ_COMPRESSION_MODE_RLE || state->m_encBlock.m_seqSectionDesc.m_matchLengthsMode == ZSTDHL_SEQ_COMPRESSION_MODE_FSE)
+				return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_MATCH_LENGTH;
+
+			// Fallthrough
+		default:
+			return GSTD_TRANSCODE_ANS_TABLE_PURPOSE_NONE;
+		}
 	}
 }
 
+zstdhl_ResultCode_t gstd_TranscodeFrameHeader(gstd_TranscodeState_t *state, const zstdhl_FrameHeaderDesc_t *frameHeader)
+{
+	const zstdhl_DictDesc_t *dictDesc = NULL;
+
+	if (frameHeader->m_dictionaryID != state->m_dictDesc.m_dictHeader.m_dictID)
+		return ZSTDHL_RESULT_DICTIONARY_MISMATCH;
+
+	if (frameHeader->m_dictionaryID)
+		dictDesc = &state->m_dictDesc;
+
+	ZSTDHL_CHECKED(gstd_Encoder_Reset(state->m_enc, dictDesc));
+
+	return ZSTDHL_RESULT_OK;
+}
 
 zstdhl_ResultCode_t gstd_TranscodeBlockHeader(gstd_TranscodeState_t *state, const zstdhl_BlockHeaderDesc_t *blockHeader)
 {
@@ -1887,6 +1963,8 @@ zstdhl_ResultCode_t gstd_TranscodeFSETableEnd(gstd_TranscodeState_t *state)
 	{
 	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_HUFFMAN_WEIGHTS:
 		state->m_encBlock.m_huffmanTreeDesc.m_weightTable.m_probabilities = state->m_encBlock.m_huffmanTreeDesc.m_weightTableProbabilities;
+		if (state->m_isInDictionary)
+			state->m_fseTablePurpose = gstd_SelectNextFSETablePurpose(state, state->m_fseTablePurpose);
 		break;
 	case GSTD_TRANSCODE_ANS_TABLE_PURPOSE_LIT_LENGTH:
 		state->m_litLengthTable.m_probabilities = (const uint32_t *)state->m_litLengthProbsVector.m_data;
@@ -2041,6 +2119,37 @@ zstdhl_ResultCode_t gstd_TranscodeFrameEnd(gstd_TranscodeState_t *state)
 	return ZSTDHL_RESULT_OK;
 }
 
+zstdhl_ResultCode_t gstd_TranscodeDictStart(gstd_TranscodeState_t *state, const zstdhl_DictHeaderDesc_t *element)
+{
+	state->m_isInDictionary = 1;
+	state->m_fseTablePurpose = GSTD_TRANSCODE_ANS_TABLE_PURPOSE_HUFFMAN_WEIGHTS;
+	state->m_dictDesc.m_dictHeader.m_dictID = element->m_dictID;
+
+	return ZSTDHL_RESULT_OK;
+}
+
+zstdhl_ResultCode_t gstd_TranscodeDictEnd(gstd_TranscodeState_t *state)
+{
+	if (state->m_fseTablePurpose != GSTD_TRANSCODE_ANS_TABLE_PURPOSE_NONE)
+		return ZSTDHL_RESULT_INTERNAL_ERROR;
+		
+	state->m_isInDictionary = 0;
+
+	return ZSTDHL_RESULT_OK;
+}
+
+zstdhl_ResultCode_t gstd_TranscodeDictRecentOffsets(gstd_TranscodeState_t *state, const zstdhl_DictRecentOffsets_t *offsets)
+{
+	if (!state->m_isInDictionary)
+		return ZSTDHL_RESULT_INTERNAL_ERROR;
+
+	state->m_dictDesc.m_recentOffsets.m_offset1 = offsets->m_offset1;
+	state->m_dictDesc.m_recentOffsets.m_offset2 = offsets->m_offset2;
+	state->m_dictDesc.m_recentOffsets.m_offset3 = offsets->m_offset3;
+
+	return ZSTDHL_RESULT_OK;
+}
+
 zstdhl_ResultCode_t gstd_TranscodeElement(void *userdata, int elementType, const void *element)
 {
 	gstd_TranscodeState_t *state = (gstd_TranscodeState_t *)userdata;
@@ -2048,7 +2157,7 @@ zstdhl_ResultCode_t gstd_TranscodeElement(void *userdata, int elementType, const
 	switch (elementType)
 	{
 	case ZSTDHL_ELEMENT_TYPE_FRAME_HEADER:
-		return ZSTDHL_RESULT_OK;
+		return gstd_TranscodeFrameHeader(state, element);
 	case ZSTDHL_ELEMENT_TYPE_BLOCK_HEADER:
 		return gstd_TranscodeBlockHeader(state, element);
 	case ZSTDHL_ELEMENT_TYPE_LITERALS_SECTION_HEADER:
@@ -2086,6 +2195,15 @@ zstdhl_ResultCode_t gstd_TranscodeElement(void *userdata, int elementType, const
 	case ZSTDHL_ELEMENT_TYPE_FRAME_END:
 		return gstd_TranscodeFrameEnd(state);
 
+	case ZSTDHL_ELEMENT_TYPE_DICT_START:
+		return gstd_TranscodeDictStart(state, element);
+
+	case ZSTDHL_ELEMENT_TYPE_DICT_RECENT_OFFSETS:
+		return gstd_TranscodeDictRecentOffsets(state, element);
+
+	case ZSTDHL_ELEMENT_TYPE_DICT_END:
+		return gstd_TranscodeDictEnd(state);
+
 	default:
 		return ZSTDHL_RESULT_INTERNAL_ERROR;
 	}
@@ -2094,19 +2212,45 @@ zstdhl_ResultCode_t gstd_TranscodeElement(void *userdata, int elementType, const
 }
 
 
-zstdhl_ResultCode_t gstd_Encoder_Transcode(gstd_EncoderState_t *encState, const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_MemoryAllocatorObject_t *alloc)
+zstdhl_ResultCode_t gstd_Encoder_Transcode(gstd_EncoderState_t *enc, const zstdhl_StreamSourceObject_t *streamSource, const zstdhl_StreamSourceObject_t *dictStreamSource, const zstdhl_MemoryAllocatorObject_t *alloc)
 {
 	gstd_TranscodeState_t tcState;
 	zstdhl_ResultCode_t resultCode = ZSTDHL_RESULT_OK;
+	zstdhl_DictDesc_t *dictDesc = NULL;
+	uint8_t haveDict = !!dictStreamSource;
 
-	ZSTDHL_CHECKED(gstd_TranscodeState_Init(&tcState, encState, alloc));
+	ZSTDHL_CHECKED(gstd_TranscodeState_Init(&tcState, enc, alloc));
 
 	zstdhl_DisassemblyOutputObject_t disasmOutputObj;
 
 	disasmOutputObj.m_reportDisassembledElementFunc = gstd_TranscodeElement;
 	disasmOutputObj.m_userdata = &tcState;
 
-	resultCode = zstdhl_Disassemble(streamSource, &disasmOutputObj, alloc);
+	if (resultCode == ZSTDHL_RESULT_OK && haveDict)
+	{
+		resultCode = zstdhl_DisassembleDict(dictStreamSource, &disasmOutputObj, alloc);
+
+		if (resultCode == ZSTDHL_RESULT_OK)
+		{
+			size_t i = 0;
+			dictDesc = &tcState.m_dictDesc;
+
+			for (i = 0; i < sizeof(zstdhl_HuffmanTreeDesc_t); i++)
+				((uint8_t *)&dictDesc->m_huffmanTreeDesc)[i] = ((const uint8_t *)&tcState.m_encBlock.m_huffmanTreeDesc)[i];
+
+			for (i = 0; i < sizeof(zstdhl_FSETableDef_t); i++)
+				((uint8_t *)&dictDesc->m_litLengthDesc)[i] = ((const uint8_t *)&tcState.m_litLengthTable)[i];
+
+			for (i = 0; i < sizeof(zstdhl_FSETableDef_t); i++)
+				((uint8_t *)&dictDesc->m_matchLengthDesc)[i] = ((const uint8_t *)&tcState.m_matchLengthTable)[i];
+
+			for (i = 0; i < sizeof(zstdhl_FSETableDef_t); i++)
+				((uint8_t *)&dictDesc->m_offsetDesc)[i] = ((const uint8_t *)&tcState.m_offsetTable)[i];
+		}
+	}
+
+	if (resultCode == ZSTDHL_RESULT_OK)
+		resultCode = zstdhl_Disassemble(streamSource, dictDesc, &disasmOutputObj, alloc);
 
 	gstd_TranscodeState_Destroy(&tcState);
 
