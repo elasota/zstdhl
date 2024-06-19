@@ -495,7 +495,7 @@ zstdhl_ResultCode_t zstdhl_DeflateConv_ConvertRawBlock(zstdhl_DeflateConv_State_
 				return ZSTDHL_RESULT_INPUT_FAILED;
 
 			ZSTDHL_CHECKED(zstdhl_Vector_Append(&state->m_literalsVector, buffer, amountRead));
-			lenRemaining -= amountRead;
+			lenRemaining -= (uint32_t)amountRead;
 		}
 	}
 
